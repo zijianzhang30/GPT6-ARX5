@@ -1,0 +1,2 @@
+# Installed in .venv-policy; the remaining dependencies use the existing system environment.
+ruckig==0.19.4

@@ -1,0 +1,67 @@
+{
+  "version": 1,
+  "robot_model": "R5",
+  "kinematics_verified": false,
+  "measurement_record": null,
+  "urdf_sha256": "77a3cd0ae94e0920dcbd4475409b22c1786dd0e2fdabee5d9915a9ee90948df6",
+  "model_provenance": {
+    "repository": "https://github.com/ARXroboticsX/R5",
+    "revision": "e87d09c11edb65f6ae672abc7a41fe2277a2f12f",
+    "path": "py/ARX_R5_python/bimanual/script/X5liteaa0.urdf",
+    "local_file_matches_official": true,
+    "physical_validation_completed": false
+  },
+  "hardware_evidence": {
+    "gripper_configuration": "Unmodified factory fingers, confirmed by operator on 2026-09-25",
+    "mounting_face_to_fingertip_estimate": {
+      "distance_m": 0.08,
+      "direction": "Along the fingers, from the end mounting face to the fingertips",
+      "source": "Operator estimated about 8 cm and explicitly confirmed length, not jaw opening",
+      "precision": "Approximate; uncertainty not measured",
+      "mounting_face_to_link6_verified": false,
+      "use": "Source of the estimated link6_from_tcp; physical validation remains pending"
+    },
+    "nominal_opening_mm": [0, 80],
+    "nominal_opening_source": "Official Python SDK manual, page 2; not a measured command-to-width mapping"
+  },
+  "calibration": {
+    "link6_from_sdk_eef": [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]],
+    "link6_from_tcp": [[0, 0, 1, 0.08], [0, 1, 0, 0], [-1, 0, 0, 0], [0, 0, 0, 1]],
+    "tcp_validation": {
+      "status": "estimated",
+      "source": "Operator estimate of 0.08 m along unmodified factory fingers; official R5 joint6 axis is link6 +X",
+      "assumptions": [
+        "The specified mounting-face center coincides with the URDF link6 origin",
+        "Fingers extend along link6 +X with no transverse offset",
+        "Tool +Z maps to link6 +X; jaw-opening tool +Y maps to link6 +Y; tool +X maps to link6 -Z"
+      ],
+      "physical_validation_record": null
+    },
+    "link6_from_camera": {"left": null},
+    "base_from_camera": {}
+  },
+  "vision": {
+    "camera_intrinsics": {"left": null},
+    "distortion_coefficients": {"left": null},
+    "image_sizes": {"left": [848, 480]},
+    "device_ids": {"left": "/dev/video10"},
+    "mount_record": null
+  },
+  "gripper": {
+    "command_closed_raw": 0.23275337219238282,
+    "command_open_raw": 4.8,
+    "feedback_closed_raw": 0.1327533721923828,
+    "feedback_open_raw": 4.691
+  },
+  "scene": {"safety_notes": [
+    "Post-initialization attended evidence at the current posture: a commanded base -Y 4 mm move produced measured TCP delta [-0.047, -4.784, +0.421] mm and shifted the detected tennis-ball center from [590.10, 159.59] to [583.64, 160.98] px (left 6.46 px, down 1.39 px). Evidence: analysis/cartesian-commission-a1238bb7f8a8_unreviewed.",
+    "Local wrist-image direction evidence near the current posture: base -Y shifts the tennis ball left in the image; base +X increases its apparent size and shifts it upward. Evidence: analysis/wrist-image-local-jacobian-20260925.json.",
+    "This is a local empirical mapping, not global hand-eye calibration. Use small moves and reacquire an image after every move.",
+    "A power brick and cables are visible on the left side of the table and must not be contacted."
+  ]},
+  "demonstrated_pregrasp": {
+    "joints_deg": [-6.633589004943104, 88.4878327731832, 14.829925291985125, 44.00893055838648, -4.2730209862733375, -5.868607817901676],
+    "source": "Operator-confirmed manual open-gripper pre-grasp demonstration, 2026-09-25",
+    "wrist_image": "analysis/policy-b7350b093942/e63bf21141824f039874ad2020723aa8-left.jpg"
+  }
+}

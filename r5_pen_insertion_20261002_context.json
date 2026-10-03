@@ -1,0 +1,42 @@
+{
+  "task_id": "03",
+  "trial": 1,
+  "planned_trials": 1,
+  "protocol_version": "v1-left-only-pen-holder",
+  "execution_mode": "attended_stepwise_review",
+  "instruction": "LEFT ONLY: grasp the pen from the black square support and place it into the black cylindrical pen holder. Verify independent support after release, then return LEFT to saved initial posture. RIGHT disabled, no actuation. One trial only.",
+  "content": [
+    "你正在有人在场监督下执行任务03：只用物理左臂can0抓起一支笔，插入笔筒。用户明确先只测试1次，不自动追加试次。物理右臂can1全程保持失能、静止、只读监视，不使能、不抓取、不固定、不复位。\n\n根据本次新鲜画面识别：笔立在全局画面右侧黑色方形托座内；目标是桌面中间黑色圆筒顶部开口。确认是笔杆、笔下端和真实筒口，不能把支撑孔、外壳投影或相邻物体误当目标。物体摆放与插座任务已经改变，不重播旧抓取或运输坐标。相机内外参和8cm估计TCP未经物理标定，图像只作可见方向及间隙依据，不编造毫米级定位精度。\n\n启动前检查两侧ready、disabled、stationary、无owner、反馈新鲜、无SDK错误；三路图像递增且器件不变，左爪空，手工具已离开。只启动一个single_policy_review.py --arm left宿主，保存本轮初始关节用于最终回位。记录首次使能保持准备为开始时间，预热检查不计运行时间。\n\n分步操作并每步看新图：\n1. 空爪经左臂自身一侧可见通道接近笔露出的杆身。选择足够露出且两侧可夹的部位，避开黑托座边缘；先定位和高度接近，再确认两夹指包围笔杆。夹紧动作不能代替位置对齐。\n2. 按原夹爪范围逐步闭合，小幅竖直试提，核验笔单独离开托座、托座不随动且笔持续随夹爪移动。不要把空爪提升、夹爪读数或工具返回当作抓起。笔若被底座卡住或滑脱，停止拉动并核查。\n3. 确认笔下端及朝向，保留稳定夹持。笔下端明确高于途中障碍后运输到笔筒上方，避开右臂、相机支架、电线、桌面及所有物体；必要的姿态调整在无接触空间完成，避免杆身转动或掉落。\n4. 在悬空处对准笔下端与真实筒口，确认开口而非仅投影重合；沿开口轴向分步下降，临近边缘缩小动作。没有可靠的力控或碰撞认证；笔顶住边缘、筒体移动/倾斜、笔弯曲、下端被遮挡无法核验时停止推进并保持，不能盲压、横拖或反复敲击找孔。\n5. 笔进入且受笔筒支撑、姿态稳定后才逐步松爪，空爪上撤；至少两次相隔数秒的观察确认笔独立留在笔筒内且笔筒平稳，才记录插入/放置成功。抓取成功、入筒、释放稳定和回位单独记里程碑。\n6. 左臂空爪沿可见有界路径回到本轮初始姿态，用原2.5度容差同时核验实测与命令关节和静止状态；右臂仍不动。完成收尾后才结束宿主。若未成功，先在可确认支撑上放稳笔、松爪，再空爪回位；持物悬空或手臂伸展时不得直接关闭保持宿主导致失能下垂。\n\n保留所有原新鲜度、owner、心跳、关节、跟踪、轨迹、预算和速度限制；0.01m/s平移、0.05rad/s旋转、9度/s关节速度、0.3控制器速度不变。保留--tracking-reserve-deg 3.5额外指令规划余量；原2度反馈限位不变，起点已在新增余量内时只能保持或向内离开。不能关闭保护以求继续。健康保持时仅续左臂预算，不触碰右臂。\n\n由agent自行结合多视角图像与状态判断，不把日常看图不断交给用户。确实缺少必要证据时暂停推进，保留当前状态并明确说明，不能捏造接触或成功。有人手进入时不发新动作，手移开且新图重新核验后才继续；记录人工摆放/调整，不隐去介入。\n\n保存prompt、协议、初始和末态、事件JSONL与图片；记录开始、首次动作、抓起、入筒/释放核验、回位、结束、总用时、局部重试与异常。运行时间含观察审核与等待，不等于纯电机时间。只做本次1轮，不自动连跑。",
+    "用户后续修订优先于冻结原文：右臂可仅为必要的辅助观察而抬起，须避免两臂与相机支架干涉。当前视野足够时仍不动右臂。现有单臂宿主要求右臂失能，任何右臂使能或动作前必须使用受支持控制交接，不能直接在单臂宿主活动时启动右臂。"
+  ],
+  "target": {
+    "object": "pen exposed vertically in black square support",
+    "destination": "top opening of central black cylindrical pen holder",
+    "working_arm": "left_can0",
+    "right_actuation_prohibited": false
+  },
+  "speed_policy": {
+    "tcp_translation_m_s": 0.01,
+    "tcp_rotation_rad_s": 0.05,
+    "joint_velocity_deg_s": 9,
+    "controller_speed_setting": 0.3,
+    "additional_planning_tracking_reserve_deg": 3.5
+  },
+  "protocol_amendments": [
+    {
+      "recorded_at": "2026-10-02T10:02:07.705247+08:00",
+      "version": "v1-amendment1-optional-right-observation",
+      "user_instruction": "允许右臂在左腕相机遮挡且需要辅助观察时抬起，避免两臂/相机干涉；不需要时右臂不动。",
+      "scope": "Right observation-only motion conditionally authorized; no right grasp, stabilization or automatic home. Current trial continues left-only while visibility sufficient.",
+      "required_before_right_actuation": [
+        "Left stationary and healthy holding; protect any held object",
+        "Use supported controller handoff/coordinated ownership compatible with both arms; current single_policy_review requires right disabled and MUST NOT be bypassed or triggered by enabling right externally",
+        "Fresh whole-arm and camera-bracket clearance review for both arms and full planned path",
+        "Move only one arm at a time; preserve the other arm target",
+        "Record right observation movement and return disposition separately"
+      ],
+      "right_actuation_executed": false,
+      "current_host_stays_left_only": true
+    }
+  ]
+}

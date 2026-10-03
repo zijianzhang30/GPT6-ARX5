@@ -1,0 +1,126 @@
+{
+  "version": 1,
+  "robot_model": "R5",
+  "kinematics_verified": false,
+  "measurement_record": null,
+  "urdf_sha256": "77a3cd0ae94e0920dcbd4475409b22c1786dd0e2fdabee5d9915a9ee90948df6",
+  "model_provenance": {
+    "repository": "https://github.com/ARXroboticsX/R5",
+    "revision": "e87d09c11edb65f6ae672abc7a41fe2277a2f12f",
+    "path": "py/ARX_R5_python/bimanual/script/X5liteaa0.urdf",
+    "local_file_matches_official": true,
+    "physical_validation_completed": false
+  },
+  "hardware_evidence": {
+    "gripper_configuration": "Unmodified factory fingers, confirmed by operator on 2026-09-25",
+    "mounting_face_to_fingertip_estimate": {
+      "distance_m": 0.08,
+      "direction": "Along the fingers, from the end mounting face to the fingertips",
+      "source": "Operator estimated about 8 cm and explicitly confirmed length, not jaw opening",
+      "precision": "Approximate; uncertainty not measured",
+      "mounting_face_to_link6_verified": false,
+      "use": "Source of the estimated link6_from_tcp; physical validation remains pending"
+    },
+    "nominal_opening_mm": [
+      0,
+      80
+    ],
+    "nominal_opening_source": "Official Python SDK manual, page 2; not a measured command-to-width mapping"
+  },
+  "calibration": {
+    "link6_from_sdk_eef": [
+      [
+        1,
+        0,
+        0,
+        0
+      ],
+      [
+        0,
+        1,
+        0,
+        0
+      ],
+      [
+        0,
+        0,
+        1,
+        0
+      ],
+      [
+        0,
+        0,
+        0,
+        1
+      ]
+    ],
+    "link6_from_tcp": [
+      [
+        0,
+        0,
+        1,
+        0.08
+      ],
+      [
+        0,
+        1,
+        0,
+        0
+      ],
+      [
+        -1,
+        0,
+        0,
+        0
+      ],
+      [
+        0,
+        0,
+        0,
+        1
+      ]
+    ],
+    "tcp_validation": {
+      "status": "estimated",
+      "source": "Operator estimate of 0.08 m along unmodified factory fingers; official R5 joint6 axis is link6 +X",
+      "assumptions": [
+        "The specified mounting-face center coincides with the URDF link6 origin",
+        "Fingers extend along link6 +X with no transverse offset",
+        "Tool +Z maps to link6 +X; jaw-opening tool +Y maps to link6 +Y; tool +X maps to link6 -Z"
+      ],
+      "physical_validation_record": null
+    },
+    "link6_from_camera": {
+      "left": null
+    },
+    "base_from_camera": {}
+  },
+  "vision": {
+    "camera_intrinsics": {
+      "left": null
+    },
+    "distortion_coefficients": {
+      "left": null
+    },
+    "image_sizes": {
+      "left": [
+        848,
+        480
+      ]
+    },
+    "device_ids": {},
+    "mount_record": null
+  },
+  "gripper": {
+    "command_closed_raw": 0.23275337219238282,
+    "command_open_raw": 4.8,
+    "feedback_closed_raw": 0.1327533721923828,
+    "feedback_open_raw": 4.691
+  },
+  "scene": {
+    "safety_notes": [
+      "Use the current global and selected wrist views. The other physical arm, its cables, tabletop, target support, tools and containers are obstacles. No historical image-to-motion mapping or saved pregrasp pose is supplied."
+    ]
+  },
+  "controlled_physical_arm": "left"
+}

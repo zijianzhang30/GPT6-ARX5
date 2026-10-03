@@ -1,0 +1,29 @@
+# Local experiment outputs and recordings
+/analysis/
+/recordings/
+/Log/
+/robot.log
+
+# Local environments and test/browser state
+/.venv-policy/
+/.browser-test/
+/.qa/
+.pytest_cache/
+__pycache__/
+*.py[cod]
+
+# Generated native artifacts and downloaded packages
+build/
+*.so
+*.so.*
+*.o
+*.a
+*.whl
+*.deb
+*.zip
+/usr/
+/kdl_local/lib/
+
+# Agent-local metadata
+/.agents/
+/.codex/

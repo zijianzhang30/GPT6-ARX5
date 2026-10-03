@@ -1,0 +1,7 @@
+cmake_minimum_required(VERSION 3.15)
+project(r5_live_sdk LANGUAGES CXX)
+find_package(pybind11 CONFIG REQUIRED)
+set(SDK "${CMAKE_CURRENT_SOURCE_DIR}/../vendor/R5-master/py/ARX_R5_python/bimanual")
+pybind11_add_module(r5_live_sdk bridge.cpp)
+target_include_directories(r5_live_sdk PRIVATE "${SDK}/lib/arx_r5_src/include" "${SDK}/lib/arx_hardware_interface/include")
+target_link_libraries(r5_live_sdk PRIVATE "${SDK}/lib/arx_r5_src/libarx_r5_src.so")

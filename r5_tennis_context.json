@@ -1,0 +1,24 @@
+{
+  "instruction": "\u6293\u53d6\u7f51\u7403",
+  "model": "gpt-6-astra",
+  "content": [
+    "\u6293\u53d6\u7f51\u7403",
+    "Verified setup evidence for this R5, 2026-09-25: a supervised empty-gripper preparation increased the submitted raw command from 0.2251239777 to 4.8 in increments no larger than 0.1. Measured feedback increased from 0.1251239777 to 4.6913857460. The operator explicitly confirmed the fingers opened. Thus increasing the raw command opens this gripper. This establishes direction, not a millimetre width mapping, force calibration, ball contact, or grasp success. The evidence log is analysis/live-policy-159299892e2f_unreviewed/events.jsonl. Powered hold and resume were physically observed stable in analysis/gripper-check-726ff4b1338f/events.jsonl; protective stop still does not guarantee holding. The next four images are historical setup references, not current clearance observations. Use fresh turn images and measured state for every action.",
+    {
+      "image": "analysis/live-policy-4169c3d899c5_unreviewed/frames/step-00000-left.jpg",
+      "label": "Historical near-closed gripper, wrist view"
+    },
+    {
+      "image": "analysis/live-policy-4169c3d899c5_unreviewed/frames/step-00000-top.jpg",
+      "label": "Historical near-closed gripper, external view"
+    },
+    {
+      "image": "analysis/live-policy-159299892e2f_unreviewed/frames/step-00000-left.jpg",
+      "label": "Historical gripper after opening to raw command 4.8, wrist view"
+    },
+    {
+      "image": "analysis/live-policy-159299892e2f_unreviewed/frames/step-00000-top.jpg",
+      "label": "Historical gripper after opening to raw command 4.8, external view"
+    }
+  ]
+}

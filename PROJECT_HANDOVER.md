@@ -1,0 +1,1165 @@
+# ARX R5 双臂 GPT-Policy 项目说明与调试交接
+
+更新日期：2026-09-30。项目目录：`/home/tuojing/arx_r5_control`。
+
+**主交接文件位置：** `/home/tuojing/arx_r5_control/PROJECT_HANDOVER.md`（相对项目根目录为 `PROJECT_HANDOVER.md`）。初始化、CAN 恢复和 SDK 连接的可执行手册见 [`MACHINE_INITIALIZATION_RUNBOOK.md`](MACHINE_INITIALIZATION_RUNBOOK.md)。README 已链接到此文件；历史逐轮记录仍在 `GPT_POLICY_HANDOFF_2026-09-26.md` 和 `GPT_POLICY_HANDOFF_2026-09-27.md`。最新瓶子往返及网球放置实验见第 13.8 节，证据分别位于 `analysis/bottle_review_20260930/` 和 `analysis/tennis_after_operator_reset_20260930/`；先前顺序抓取见第 13.6 节。
+
+本文面向接手调试的同学，按当前代码整理系统结构、已实现功能、已知问题、启动方法和排查顺序。运行状态均为带时间的快照，接手时必须重新读取；历史 PID、设备节点和某一轮的末端坐标不能直接当作当前状态。
+
+**目前已打通双臂图像观察、GPT 决策、官方 R5 解算、实际关节运动及夹爪开闭。9 月 30 日顺序实验中，左臂网球已出现可见离座和持续夹持；右臂可乐两次试提仍未确认离桌，两件物品同时抓起的目标尚未完成。**
+
+**最新任务结果（2026-09-30）：** 右臂已完成透明塑料瓶放到黑色支撑、松爪站稳，再取回接近原来的桌面位置、松爪退开，均有独立图像核验。用户恢复两臂有效姿态后，左臂在更低的位置成功抓起桌面网球，多次上提及横移中球持续留在指间；已移到黑色支撑附近并下降，但首次小幅松爪触发夹爪到位超时，宿主退出，尚未完成松爪放置。退出后最后有效反馈左 J4 下垂至约 78.54°、超出模型范围；随后最新检查发现两臂均 `SDK motor fault`、关节角为空、数分钟没有 CAN 电机回包，虽然 `can0/can1` 接口仍 UP。当前两臂失能，网球退出后位置未确认，需要检查供电/通信并人工恢复。小步夹爪到位误判已修复并离线验证，尚未再次实机验证。原自动策略出现空抓误判，后续由 Codex 看图逐步调用原版 Cartesian 工具，不能记为自动策略独立成功。当前没有自动推理或活跃保持宿主。详见第 13.8 节，接手须重新查实际状态。
+
+## 1. 目标、当前进度与阅读顺序
+
+当前任务：右臂把透明塑料瓶放到黑色支撑并返回原桌面位置，随后左臂把桌面网球放到空出的黑色支撑上。此前的左臂网球、右臂饮料罐抬起实验为历史任务，不是本轮完成条件。早期任务只使用左臂；后续增加右臂、右腕相机及双臂协调。
+
+控制方式是视觉语言模型根据图像和实测状态生成结构化动作，再由本地规划器和驱动执行。没有为本项目训练专用抓取网络，也没有在线更新模型权重。历史结果会保留在会话或场景提示中，这属于上下文反馈，不是模型“自动进化训练”。
+
+| 能力 | 当前状态 | 实际含义 |
+| --- | --- | --- |
+| 两套 CAN、两臂关节反馈 | 已恢复并用于实机运动 | 左侧曾断线，修复后通信恢复；需要每次复核 |
+| 双臂使能、带电保持 | 已在监督实验中使用 | 退出/故障保护与带电保持是不同状态 |
+| 两路腕部 RGB + 一路全局 RGB | 已接入 | 无已验证的深度或完整相机标定 |
+| 原版 GPT-Policy 决策循环及工具 | 已接入并实机执行 | 硬件、坐标和执行监督采用 R5 适配 |
+| 官方 R5 FK/IK + 连续 IK 修正 | 已接入 | 软件模型一致不代表 TCP 已完成实物标定 |
+| 双臂同时执行轨迹 | 已实机执行 | 两侧先规划/预检再同步下发；不是硬实时同步 |
+| 夹爪张开、闭合 | 已实机执行 | 位置反馈不能单独证明接触或抓牢 |
+| 决策/运动预算自动续段 | 已运行 | 不会自动覆盖模型 `give_up` 或真实故障 |
+| 返回保存的初始关节姿态 | 已实现并实机验证 | 返回指定参考，不是任意环境通用“复位” |
+| 开爪 5 倍驱动斜坡 | 当前两侧服务已报告倍率 5 并实机使用 | 加快张爪准备，不改变开度终点 |
+| 左臂网球离座并保持 | 9 月 30 日本轮有图像证据 | 是当前场景一次成功，不代表任意位置可靠抓取 |
+| 成功抓取并抬起两件物品 | 未验证 | 这是下一阶段的主要目标 |
+| 双臂几何碰撞检测、力控抓取 | 未实现/未验证 | 不能把路径数值预检当作这些能力 |
+
+建议先读第 2、4、7、8 节完成环境认识和启动，再按第 10 节调试。具体历史证据见 [9 月 26 日记录](GPT_POLICY_HANDOFF_2026-09-26.md) 和 [9 月 27 日记录](GPT_POLICY_HANDOFF_2026-09-27.md)。这两份是顺序追加的实验记录，靠前条目可能已被后续更新取代。`docs/` 和 README 的部分正文也保留了早期状态，启动当前版本优先参考本文与实际代码。
+
+## 2. 硬件、设备映射和端口
+
+“左/右”按当前全局相机中两只机械臂的物理身份约定。换线后不能仅凭 `can0` 名称推断物理左右。
+
+| 对象 | 稳定身份/连接 | 软件对应 |
+| --- | --- | --- |
+| 左臂 CANable | 序列号 `208833765931` | `can0`，底层工作台 `8765` |
+| 右臂 CANable | 序列号 `2088335E5931` | `can1`，底层工作台 `8766` |
+| 左腕 Gemini 305，白色安装件 | `CV2C8610015R` | `gemini`，模型图像名 `left` |
+| 右腕 Gemini 305，黑色安装件 | `CV2C86100180` | 代理中的 `gemini_right`，模型图像名 `right` |
+| 外部全局 Sonix RGB | `AY2R7630114` | `external`，模型图像名 `top` |
+| 双臂页面/代理 | `http://127.0.0.1:8768` | 同时展示两臂状态和三路相机 |
+
+`top` 是上游图像角色名，不代表相机在正上方。该相机已被操作者移动过；旧画面和旧视角方向不能直接套用。`/dev/ttyACM*`、`/dev/video*` 会随 USB 插拔改变，选择设备优先使用序列号。
+
+两路腕图当前使用 848×480 RGB，全局图使用 640×480 RGB。图像帧带接收时间、帧序号和设备标识，但不是硬件同步曝光，也没有 RGB-D 深度进入当前策略。
+
+两臂有独立底座坐标系，目前没有实测的两底座相对变换。不能把左臂的正负 Y 方向、TCP 数值或相机像素方向直接转用给右臂。操作者曾人工试过两处工作区的路径，但这不等于软件已有双臂碰撞模型。
+
+## 3. 整体控制逻辑
+
+```text
+三路新鲜 RGB 图像 + 两臂关节/夹爪实测反馈
+                         |
+                         v
+GPT-Policy run_loop -> GPT-6-astra 结构化工具决策
+                         |
+            move_to / move_eef_chunk / set_gripper
+                         |
+                         v
+R5 单臂/双臂适配层：坐标转换、官方 FK/IK、ContinuousIK
+                         |
+                         v
+Ruckig 时间参数化 -> 两侧预检 -> 成对轨迹下发
+                         |
+                         v
+8768 代理 -> 8765 左臂 / 8766 右臂
+                         |
+                         v
+live_control -> robot_worker -> 原生 SDK -> can0 / can1
+                         |
+                         v
+实际反馈、动作结果和新图像 -> 下一次模型决策
+
+相机监督、心跳和故障检查在独立线程持续运行。
+```
+
+### 3.1 GPT 实际输出什么
+
+当前主要是绝对末端 TCP 位姿，而不是 GPT 直接输出电机电流：
+
+- `move_to`：一个或两臂的绝对 TCP 目标。
+- `move_eef_chunk`：多个末端路径点，再由本地规划器插值/定时。
+- `set_gripper`：归一化绝对开度，0 近闭、1 近开，通过各臂 profile 映射为 raw。
+- `check_path`：检查可解性和现有数值约束，不是环境碰撞检测。
+- `done` / `give_up`：模型的结束判断；宿主一般继续带电保持供接管。
+
+双臂目标中某一侧为 `null` 表示该侧保持，另一侧运动。关节轨迹与夹爪动作分开执行。双臂各自解算、预检完成后才通过线程屏障发出请求，并将较快一侧减速到共同时间；HTTP 下发不是硬实时硬件同步。
+
+### 3.2 图像如何变成末端目标
+
+当前使用 `image_grasp` 实验阶段。GPT 结合图像、当前 TCP/关节状态、上一动作和观察到的图像变化估计下一步目标；本地代码没有已标定的“球像素 -> 三维米制坐标”映射。
+
+在这个阶段，`locate_point` 被禁用，相机内外参允许保持 `null`。因此可以在没有标定板的情况下进行图像引导实验，但接近深度、接触高度和抓牢判断仍可能错。不能将“能运行”写成“已经精确知道球的空间坐标”。
+
+GPT 输入包含实测/命令关节角、跟踪误差、关节范围、实测/命令 TCP、夹爪实测/命令开度、剩余预算及三路图像。下一步增量规划应参考完整的命令 TCP，实际进展由实测反馈与图像判断；不要拼接实测位置与旧命令姿态。
+
+### 3.3 与原版 GPT-Policy 的关系
+
+上游来自用户提供的 `/home/tuojing/Downloads/GPT-Policy.zip`，本地代码位于 `vendor/GPT-Policy-main/`。原 ZIP 未改动，本地展开副本有适配补丁。原项目硬件示例主要是 ARX X5/YAM，不能直接当作 R5 驱动启动。
+
+复用了原版的观察/决策/执行循环、模型会话、工具 schema、坐标/位姿工具、连续 IK、末端路径规划、Ruckig 时间参数化、双臂时间协调和轨迹记录。R5 的 SDK、反馈单位、TCP 偏移、CAN 路由、监督和分段预算由本项目适配。
+
+本地上游补丁包括运行循环的设备结束回调、模型超时/JSON 错误恢复、等待期间的健康检查、保留已完成会话历史，以及续段图片文件名隔离等。升级上游前应逐项比较，不能用新目录直接覆盖。源码许可说明见 `vendor/GPT-Policy-main/LICENSE` 和 `docs/GPT_POLICY_R5.md`，不要假定第三方代码均为 MIT。
+
+## 4. 坐标、单位、标定与官方解算
+
+| 字段/层 | 单位和含义 |
+| --- | --- |
+| HTTP `joints_deg` / `command_deg` | J1..J6，度；分别为实测和已提交命令 |
+| 模型 `joint_pos` / IK 输入 | 弧度 |
+| `pose_xyzquat` | `[x,y,z,qx,qy,qz,qw]`，位置为米 |
+| `tcp_pose_xyzrpy` | 米、弧度，依据模型及 TCP 估计计算 |
+| 网页 `pose` | 现有工作台姿态表示，位置毫米、角度度；不应当直接替代策略 TCP |
+| `gripper_raw` | 夹爪实测原始位置，0..5 SDK 单位，不是毫米或力 |
+| `gripper_command_raw` / `gripper_target_raw` | 命令相关参考，执行时需区分斜坡中间值和最终目标 |
+| `gripper_command_normalized` | 依据 command 两端点计算的 0..1 开度 |
+| `currents` | 驱动电流字段，不是已标定的关节力矩或夹持力 |
+
+### 4.1 官方 R5 解算器
+
+`r5_official_solver.py` 只加载原生 `kinematic_solver`，不会构造机械臂或连接 CAN。上游 `ContinuousIK` 以当前已保持的命令关节为参考，在官方候选结果基础上修正。
+
+官方独立 FK 扣除了零位平移，适配器恢复该偏移后再应用 link6 到 TCP 变换。本机离线核对偏移约为：
+
+```text
+[0.0977000000, 0.0000495592, 0.1635000004] m
+```
+
+这个数是坐标约定转换，不是抓取点实测标定值。启动时用多个关节姿态核对官方 FK 与本地 URDF 一致性。官方 IK 没有 seed/明确成功状态，适配层额外检查有限数、角度周期、限位和远处分支；不能因为调用“官方函数”就省去这些检查。
+
+模型来源：`https://github.com/ARXroboticsX/R5`，revision `e87d09c11edb65f6ae672abc7a41fe2277a2f12f`。使用的 URDF 路径为 `vendor/R5-master/py/ARX_R5_python/bimanual/script/X5liteaa0.urdf`。文件名含 X5 不表示当前调用的是上游 X5 驱动。
+
+### 4.2 当前 profile 的真实状态
+
+双臂分别使用：
+
+- `r5_left_image_grasp_20260927_profile.json`
+- `r5_right_image_grasp_20260927_profile.json`
+
+两者 `kinematics_verified=false`、`measurement_record=null`，TCP validation 为 `estimated`。左夹指由操作者确认是未改原厂夹指，估计安装面到指尖约 8 cm；不是 8 cm 的精确手眼标定。右侧几何和夹爪端点由同型号左侧参数转用，未独立实测标定。
+
+当前 `link6_from_tcp` 的假设是平移 `[0.08,0,0]` 米，tool +Z 对应 link6 +X，tool +Y 对应 link6 +Y，tool +X 对应 link6 -Z。安装面中心与 link6 原点重合等假设尚需验证。
+
+夹爪 command 两端点约为 closed `0.2327533722`、open `4.8`；feedback 两端点约为 closed `0.1327533722`、open `4.691`。command 和 feedback 的偏移不能混用，0.1 raw 也不能直接换算为某个毫米数。
+
+`motion`、`vision`、`grasp` 是要求更多验证信息的阶段；`image_grasp` 是当前有人看护、使用估计参数的实验阶段。`--check` 显示 image_grasp 可用而其他阶段仍有 blockers，是符合目前配置的，不能通过随便填写 `verified=true` 消除问题。
+
+## 5. 目录与模块导航
+
+| 文件/目录 | 接手时关注的职责 |
+| --- | --- |
+| `app.py`、`web/` | 单臂网页/API、界面与启动参数 |
+| `live_control.py` | 实机状态、命令斜坡、保持/恢复、轨迹播放入口 |
+| `robot_worker.py`、`worker_control.py` | 独立 SDK 工作进程、消息时效和看门狗 |
+| `native_live/bridge.cpp` | 厂商 SDK 的本机 Python 绑定 |
+| `camera_streams.py` | 相机发现、序列号选择、MJPEG 获取 |
+| `record_workbench.py` | 8768 代理、两臂路由、owner 互锁、左臂示范录制 |
+| `supervised_dual_policy.py` | 当前双臂实机实验主入口 |
+| `supervised_policy.py` | 单臂入口，以及保持准备、开爪准备和推理 deadline |
+| `r5_dual_policy.py` | 双臂工具、分别规划、共同预检、成对下发和故障传播 |
+| `r5_cartesian.py` | profile 阶段检查、TCP/夹爪转换、提示词和末端规划 |
+| `r5_official_solver.py` | 官方解算加载、基座原点修正、IK 候选检查 |
+| `r5_policy_backend.py` | 最新观测有效性、实际下发、settle、保持及预算续段 |
+| `r5_policy_deployment.py` | 将 R5 状态/相机接入上游循环、预算边界 |
+| `r5_policy_supervisor.py` | 独立相机监督和策略心跳 |
+| `motion_safety.py` | 数值界限、反馈检查、每段预算 |
+| `policy_trajectory.py` | 整条关节路径检查和定时采样 |
+| `policy_runner.py` | 模型配置加载；另提供不执行动作的 shadow 入口 |
+| `policy_adapter.py`、`visual_control.py` | 早期只读/关节工具，以及仍被复用的 HTTP 客户端 |
+| `dual_return_pose.py` | 返回录制起点或保存参考关节姿态 |
+| `dual_return_start_20260927.json` | 2026-09-27 某轮实测开始姿态；不是通用机械零位 |
+| `stationary_gripper_trial.py` 等 `*trial.py` | 单独夹爪/关节诊断；运行前先看各自 `--help` |
+| `vendor/GPT-Policy-main/` | 上游策略副本及本地补丁 |
+| `vendor/R5-master/`、`kdl_local/` | 厂商代码、原生库及 KDL 依赖 |
+| `analysis/` | 策略每轮图像、事件、错误、离线检查证据 |
+| `recordings/` | 8768 示范录制产物；不同于双臂策略 run |
+| `tests/` | 离线、模拟 API、规划及反馈回归 |
+
+## 6. 已解决的关键问题
+
+| 原问题 | 修复与当前行为 | 主要位置 |
+| --- | --- | --- |
+| 换线后 CAN 左右不清、左臂无回包 | 按转接器序列号重新确认物理映射；断线焊接修复后恢复通信 | CAN 启动脚本、9 月 27 日记录 |
+| SDK 初始化阻塞网页、可能回零 | SDK 独立进程；将连接初始化与策略使能区分 | `robot_worker.py`、`live_control.py` |
+| 模型等待期间断心跳 | 相机、心跳独立监督；模型调用带健康检查 | `r5_policy_supervisor.py` |
+| 旧目标/超时消息晚到又重新驱动 | worker v2 检查消息时效，看门狗故障锁存 | `worker_control.py` |
+| FK 原点不一致、IK 跳支 | 恢复官方 FK 零位偏移，限制候选分支并连续修正 | `r5_official_solver.py` |
+| 固定 4 mm 动作过碎 | 当前 image_grasp 不设固定 4 mm 末端目标增量，保留解算路径界限 | `r5_cartesian.py` |
+| 执行/保持容差不同导致刚到位又退出 | 统一完成 2.5°、保持/轨迹 3°；检查服务与宿主契约 | `motion_safety.py`、`supervised_policy.py` |
+| 次要小关节噪声被当作反向 | 定时轨迹使用 40% 整体进展和 0.3° 次要反向死区 | `_settle`、`visual_control.step_settled` |
+| 夹爪闭合步幅太小、长闭合被固定超时拦住 | 闭合允许 1 raw；等待时间依据行程估算 | `motion_safety.py`、`r5_policy_backend.py` |
+| 开爪预检拒绝被误报为真实会话故障 | 在 guard 副本预检；返回可恢复拒绝和允许的下一开度范围 | `r5_dual_policy.py` |
+| 归一化开度按滞后反馈算导致越界 | 下一开度区间按 command 而非 feedback 计算 | `r5_cartesian.py` |
+| 使能时约 0.036 raw 回弹导致双臂准备失败 | 双臂准备阈值统一为 0.05 raw；单臂默认仍为 0.03 | `supervised_dual_policy.py` |
+| 开爪最后 0.002 raw 尾步没有编码器变化而超时 | <=0.01 raw 的尾步允许按稳定、提交和原位置余差判断 | `open_empty_gripper` |
+| 预算拒绝污染真实 guard | 预检不消耗预算、不锁存真实会话 | `policy_trajectory.py`、后端 |
+| 模型看到预算几乎耗尽而提前 give_up | auto-renew 时提前检查剩余行程/偏移/提案，转入正常续段 | `motion_budget_headroom` |
+| 续段重建会话、图像文件覆盖 | 模型会话保留，图片名加 segment；续段保留观察到的方向经验 | 宿主、上游 recorder |
+| 续段锁占用挡住监督心跳 | 等待测量/保持时释放命令锁，独立心跳仍执行 | `r5_policy_backend.py` |
+| 模型超时或坏 JSON 直接结束 | 丢弃未完成请求、刷新观测、有界重试；不修补动作数字 | `DeadlineAgent`、上游 runner |
+| 一侧规划失败时另一侧先动 | 两侧规划/预检通过后再成对下发 | `r5_dual_policy.py` |
+
+这些修复解决了通信、执行或错误恢复问题，不等于解决了视觉抓取策略本身。
+
+## 7. 环境和启动前检查
+
+### 7.1 本机软件环境
+
+本机使用 Linux x86_64、Python 3.14.4。策略虚拟环境是 `.venv-policy`，使用 system-site-packages。当前可导入 NumPy、Pillow、jsonschema、OpenCV、pytest；Ruckig 是 `0.19.4`。`requirements-policy.txt` 只列补充依赖，不是新机器完整安装清单。
+
+模型配置：`vendor/GPT-Policy-main/configs/agents/codex.json`。本文核对值为 `model=gpt-6-astra`、`effort=low`、`live_image_window=8`。其中 `task_name_model=gpt-5.6-luna` 用于任务命名，不能据此断言控制决策模型被切换。运行模型仍以启动输出和 run 配置记录为准，单独修改任务 JSON 的 `model` 字段不保证切换 provider 配置。
+
+本机模型通过 `codex` 可执行程序和已有账号/服务配置运行。迁移机器需要单独配置访问条件；不要将密码、登录 token 或 API key 写入交接文档和实验记录。
+
+只做离线检查：
+
+```bash
+cd /home/tuojing/arx_r5_control
+.venv-policy/bin/python supervised_dual_policy.py --check
+.venv-policy/bin/python - <<'PY'
+from policy_runner import upstream_config
+from r5_official_solver import R5Solver
+c = upstream_config()
+print('model:', c.model, 'effort:', c.effort)
+print('official FK offset:', R5Solver().base_offset_m.tolist())
+PY
+```
+
+第一条 `--check` 只验证配置，不能证明硬件已连接、原生解算依赖都可用或模型会返回。第二条额外加载官方解算器，也不连接 CAN。KDL 的 root inertia 提示在既有配置中会出现，是否可用应看后续是否成功和是否有异常。
+
+重新编译 SDK 绑定的已用入口：
+
+```bash
+cmake -S native_live -B native_live/build
+cmake --build native_live/build -j 2
+```
+
+这只负责 `r5_live_sdk`。官方 `kinematic_solver.cpython-314-x86_64-linux-gnu.so` 是另一份绑定；换 Python 版本需要分别处理 ABI 与动态库依赖。单独执行 `pip install -r requirements-policy.txt` 不能重建所有原生组件。
+
+### 7.2 先看有没有正在运行的控制器
+
+```bash
+pgrep -af 'app.py|robot_worker.py|record_workbench.py|dual_return_pose.py|supervised_dual_policy.py|supervised_policy.py'
+ip -brief link show can0
+ip -brief link show can1
+ls -l /dev/serial/by-id/
+```
+
+`can0 UP` 或 USB 能枚举，仅说明接口存在；电机通信还需要 `robot_status=ready`、有效六关节反馈、无 SDK 错误码、新鲜且不断增加的接收计数。
+
+以下只读脚本可同时核对左右状态，不发送使能或运动指令：
+
+```bash
+.venv-policy/bin/python - <<'PY'
+from visual_control import ArmWorkbenchClient
+keys = ('channel', 'robot_status', 'worker_running', 'enabled', 'control_state',
+        'owner', 'joints_deg', 'feedback_age_ms', 'rx_age_ms', 'rx_count',
+        'error_codes', 'gripper_raw', 'gripper_command_raw',
+        'policy_step_limits_deg', 'policy_tracking_limits_deg',
+        'gripper_open_speed_multiplier')
+for side in ('left', 'right'):
+    state = ArmWorkbenchClient('http://127.0.0.1:8768', side).state()
+    print(side, {key: state.get(key) for key in keys})
+PY
+```
+
+已有宿主占用 `owner` 时，先在原终端核对其状态。不要启动第二个宿主共用同一个 owner，也不要直接使用 8765/8766 绕开代理下发动作。owner 和代理互锁是本机控制协调机制，不是物理防碰撞能力。
+
+## 8. 启动方法
+
+### 8.1 冷启动两套 CAN
+
+仅在没有对应 SDK/控制会话运行、接口确实未建立时执行。现有连接正常则跳过；USB 重插后的残留桥进程需要先核对身份，不要复制历史 PID 去 kill。
+
+左侧已有脚本，固定匹配 `208833765931`：
+
+```bash
+cd /home/tuojing/arx_r5_control
+./connect_can.sh
+```
+
+右侧尚没有同等的一键恢复脚本。确认右转接器 by-id 路径存在且 `can1` 不存在后，冷启动命令为：
+
+```bash
+sudo slcand -o -f -s8 \
+  /dev/serial/by-id/usb-Openlight_Labs_CANable2_b158aa7_github.com_normaldotcom_canable2.git_2088335E5931-if00 \
+  can1
+sudo ip link set can1 up
+ip -details -statistics link show can1
+```
+
+`-s8` 是此 SLCAN 适配器使用的 1 Mbit/s 配置。左右机械臂端接线如果也换过，重新确认物理对应。可使用“只拔掉一侧转接器的电脑端 USB，再核对消失的序列号”方法，但须先妥善结束该侧 SDK 和控制，不能在运动中拔线辨认。
+
+`tools/restore_can.sh` 是左侧特定恢复脚本，会拒绝已有 `can0` 或仍有 SDK worker 的情况；不是通用双臂恢复器，不要修改它去强行绕过正在运行的会话。
+
+### 8.2 启动两臂底层服务并连接 SDK
+
+分别在两个终端运行：
+
+```bash
+# 终端 A：左臂
+cd /home/tuojing/arx_r5_control
+./start.sh --live --no-browser --supervised-policy \
+  --port 8765 --can can0 --wrist-serial CV2C8610015R
+```
+
+```bash
+# 终端 B：右臂
+cd /home/tuojing/arx_r5_control
+./start.sh --live --no-browser --supervised-policy \
+  --port 8766 --can can1 --wrist-serial CV2C86100180
+```
+
+服务启动本身等待网页连接。打开对应 8765/8766 页面，逐臂点击连接并确认初始化。**厂商 SDK 构造包含使能和回零过程，连接 SDK 不是只读操作。** 先确认两臂初始化路径与现场物品/线缆间隙；初始化期间普通网页暂停不能保证打断构造函数。
+
+每侧完成后确认 `ready`、六关节有值、错误码为空、反馈更新。供策略接管前应没有网页或其他程序持续占用控制权；不要提前遥操保持后直接启动另一个 owner。`--supervised-policy` 必须保留，默认网页实机服务不等于允许策略执行。
+
+如果 8765/8766 和 SDK 已健康运行，仅重启策略时不需要上述操作，也不需要再次回零。
+
+### 8.3 启动双臂代理 8768
+
+首次冷启动、确认没有旧代理和旧宿主后，在终端 C 生成一个本次专用 owner 并启动代理：
+
+```bash
+cd /home/tuojing/arx_r5_control
+R5_PAIRED_CLIENT="$(python3 -c 'import uuid; print("dual-policy-" + uuid.uuid4().hex)')"
+.venv-policy/bin/python record_workbench.py \
+  --upstream http://127.0.0.1:8765 \
+  --right-upstream http://127.0.0.1:8766 \
+  --port 8768 --paired-policy-client "$R5_PAIRED_CLIENT"
+```
+
+在 8768 查看左右关节、夹爪和三路相机。普通页面客户端仍是一次一臂的互锁；只有这个预留 owner 对应的协调器允许成对控制。没有 `--paired-policy-client` 的普通代理不能用于当前双臂并发入口。
+
+代理的示范录制目前仍主要记录左臂双相机，不是双臂同步示范数据集。右臂控制与旧示范录制会有互锁；双臂策略本身的三路图像和两臂状态由 `analysis/dual-policy-*` 记录。
+
+### 8.4 复用已运行服务，启动当前双臂实验
+
+这是日常最常用的路径。前提：两侧 SDK 已健康、8768 已预留双臂 owner、没有其他控制宿主占用，两臂现场可建立保持，夹爪为空且张开路径明确。
+
+先从当前代理只读获取 owner，避免照抄旧会话 ID：
+
+```bash
+cd /home/tuojing/arx_r5_control
+R5_PAIRED_CLIENT="$(.venv-policy/bin/python - <<'PY'
+import re
+from visual_control import WorkbenchClient
+owner = WorkbenchClient('http://127.0.0.1:8768').request('/api/arms').get('paired_policy_client')
+if not isinstance(owner, str) or not re.fullmatch(r'dual-policy-[a-f0-9]{32}', owner):
+    raise SystemExit('8768 is not reserved for a dual-policy coordinator')
+print(owner)
+PY
+)"
+```
+
+再运行：
+
+```bash
+.venv-policy/bin/python supervised_dual_policy.py --check
+.venv-policy/bin/python supervised_dual_policy.py \
+  --supported-supervision --wait-for-start \
+  --paired-client "$R5_PAIRED_CLIENT" \
+  --open-empty-grippers --auto-renew-budgets \
+  --max-decisions 12 --max-segments 12
+```
+
+宿主先使能并分别建立稳定保持，随后打印 `holding_waiting_for_start`。`--wait-for-start` 并不表示之前完全不使能，而是尚不开始张爪准备和模型控制。确认新图与现场后，在该终端输入：
+
+```text
+start
+```
+
+此后先补足空爪张开，再进入模型循环。双臂入口对实测 raw >=4.6 的一侧会跳过开爪准备，其余目标为命令 4.8。`--open-empty-grippers` 会实际张开，不能用于已经夹持物体的交接。
+
+模型等待期间会保持当前命令并持续心跳；动作完成后再采图决策。看到 `holding` 不等于任务停止。每段最多 12 次模型决策，预算健康时可自动续至配置的 12 段；“12 次”不是整项任务只允许 12 个动作。
+
+### 8.5 continue、stop、退出与重新启动的区别
+
+| 现象/输入 | 含义和处理 |
+| --- | --- |
+| `Waiting for model decision` | 正在等模型，短暂没有关节运动属正常 |
+| `model_retry` | 超时/暂时不可用/无效 JSON，刷新观测后有界重试 |
+| `tool_rejected` | 本次动作未执行，模型接收原因重新规划；通常宿主仍健康 |
+| `budget_exhausted` / `motion_budget_boundary` / `gripper_budget_boundary` | 预算边界；满足 auto-renew 条件会续段 |
+| `done` 对应 completed | 模型声称完成，需用实物画面验证；宿主保持 |
+| `give_up` | 模型结束本段，不自动无限重试；宿主通常仍保持 |
+| `continue` | 在原宿主等待处审核现场后续段，保留模型会话，不重连 SDK |
+| `host_error` / failed | 真实执行或监督异常；清理可能释放两臂，需要重新检查姿态 |
+| `stop`、终端 EOF 或退出 | 退出流程会释放带电保持，机械臂可能回落 |
+
+**当前双臂策略宿主在 `run_r5_policy()` 返回段结果后才读取排队的文字 `stop/continue`。因此推理或执行段中输入 `stop` 不保证立即中断当前动作；不能把这个终端命令当作实时急停。** `Ctrl+C` 会进入异常清理，也不能当作防坠保持。需要即时处置时按现场已验证的设备停止方式处理，不能靠再开第二个控制客户端抢占。
+
+正常切换程序前先妥善支撑/放置两臂和被夹物，再退出原宿主并确认控制释放。退出后读取新状态/新图，因为已多次实测到释放保持导致明显回落。没有一个已经实现并验证的“随时暂停模型、无缝交给另一个程序且姿态绝对不动”的通用交接入口。
+
+### 8.6 单臂复现
+
+确认另一臂没有使能/初始化，且双臂宿主已结束。左臂示例：
+
+```bash
+.venv-policy/bin/python supervised_policy.py \
+  --supported-supervision --wait-for-start \
+  --url http://127.0.0.1:8768 --arm left \
+  --policy-interface cartesian --camera-mode both --cartesian-stage image_grasp \
+  --calibration-profile r5_left_image_grasp_20260927_profile.json \
+  --input-json r5_left_tennis_20260927_context.json \
+  --open-gripper-to 4.8 --auto-renew-budgets \
+  --max-decisions 12 --max-guided-segments 16
+```
+
+右臂替换为 `--arm right`、`r5_right_image_grasp_20260927_profile.json`、`r5_right_cola_20260927_context.json`。同样需要输入 `start`。确认空爪已经充分张开时可省略 `--open-gripper-to 4.8`。不带当前 profile 和 `image_grasp` 的单臂默认命令可能落到要求完整标定的阶段并阻止运行。
+
+### 8.7 返回保存的初始姿态
+
+只读预览会读取当前两臂状态和进行离线规划，不使能：
+
+```bash
+.venv-policy/bin/python dual_return_pose.py \
+  --reference dual_return_start_20260927.json
+```
+
+确认原宿主已退出、两侧没有被占用，并重新核对返回路径后执行：
+
+```bash
+.venv-policy/bin/python dual_return_pose.py \
+  --reference dual_return_start_20260927.json \
+  --execute --supported-supervision --paired-client "$R5_PAIRED_CLIENT"
+```
+
+建立保持后等待 `start`；到达参考后继续带电保持。也可以用 `--run <实际存在的双臂运行目录>` 提取该轮首个记录姿态。目录结束后可能改名，长期使用应保存独立 reference JSON。
+
+返回脚本每段最多 6°/关节、8.25°合成幅度，固定小段返回；不调用模型、不重连 SDK、不自动开爪。保存的参考是当时实测六关节角，不是全零，也不是 `control.START` 仿真常量。实机已完成过返回，最大参考余差左约 0.984°、右约 0.852°，证据见 `analysis/dual-return-e8c7d3902ee7/`。移动底座、支撑、相机或物体后仍需重新判断路径。
+
+## 9. 当前参数、速度和部署边界
+
+### 9.1 动作、预算和反馈
+
+以下是 2026-09-27 磁盘源码值；运行服务应通过状态接口复核：
+
+| 参数 | 当前值 | 含义 |
+| --- | --- | --- |
+| `JOINT_STEP_DEG` | 24° | 整个观察动作路径内单关节位移范围 |
+| `JOINT_STEP_NORM_DEG` | 33° | 整条路径关节位移向量范数范围 |
+| `JOINT_MARGIN_DEG` | 2° | 距物理关节数值限位的软件余量 |
+| `SUPERVISED_SPEED` | 0.3 | 监督控制速度比例 |
+| 完成/保持/轨迹残差 | 2.5° / 3° / 3° | 余差允许量，不是稳定波动允许量 |
+| 定时轨迹整体进展 | 至少 40% | 与稳定、残差等条件共同判断 |
+| 次要反向绝对死区 | 0.3° | 避免极小关节分量噪声误停 |
+| `SESSION_EXCURSION_DEG` | 40° | 当前段相对锚点偏移上限 |
+| `SESSION_JOINT_TRAVEL_DEG` | 120° | 所有关节累计绝对路径行程，反向也计入 |
+| `SESSION_GRIPPER_TRAVEL_RAW` | 5.0 raw | 当前段夹爪累计命令行程 |
+| `SESSION_PROPOSALS` | 20 | 当前段底层接受的提案数上限 |
+| 开爪/闭爪单次提案 | 0.1 / 1.0 raw | 张开与闭合方向不同，非绝对目标乘倍数 |
+| 双臂模型决策/自动段数 | 启动示例 12 / 12 | 与底层提案和行程预算是不同计数 |
+
+`r5_cartesian.py` 的当前定时参数：50 Hz 输出、空间采样间隔 0.001 m、旋转采样间隔 0.01 rad、TCP 速度 0.01 m/s、TCP 角速度 0.05 rad/s、关节速度 9°/s、加速度 45°/s²、jerk 240°/s³。空间采样间隔不等于 GPT 每次只能移动 1 mm。单条传输轨迹时长不超过 30 秒。
+
+没有固定 4 mm 或 1 cm 的 GPT 末端增量限制；但同样 2 cm 末端移动，在不同姿态可能需要差别很大的关节位移，整条解算路径仍可能被拒绝。扩大关节幅度不代表任意姿态的 TCP 距离恰好翻倍。
+
+关节稳定判定还要求约 0.5 秒以上的近期样本、窗口内每轴峰峰值不超过 0.1°、样本间隔不超过 0.15 秒。2.5° 是终点误差阈值，不能据此说 1° 来回振动一定通过。夹爪还检查命令提交、反馈稳定（近期 raw 波动 <=0.02）、目标余差 <=0.15 raw 和正常步的至少 50% 进展。
+
+反馈新鲜度检查包含 `feedback_age_ms` 和 `rx_age_ms` <=150 ms；独立策略监督约每 50 ms 检查，最长检查间隔 0.3 秒；相机监督约 0.5 秒有效期；worker 控制租约约 350 ms。总线级新鲜度并不等于每个电机都有独立采样时间戳。
+
+### 9.2 为什么看起来慢、走一段停一下
+
+当前是“采图 -> 模型决策 -> 执行 -> 稳定保持 -> 再采图”的分步闭环。API/模型往返通常比轨迹执行更久；某轮统计决策中位数约 12.3 秒、工具执行约 2.2 秒，其他时段可能超过 25 秒并重试。这些是历史观测，不保证每轮固定间隔。
+
+每次推理 deadline 为 25 秒。过期请求被丢弃，重采图后最多重试 20 次、总恢复窗口 300 秒。不要把传输超时当成 CAN 卡死，也不要用提高关节速度解决模型请求延迟。
+
+此外，TCP 的 0.01 m/s 限制、稳定等待，以及开爪每次只有 0.1 raw 的模型步长也会增加耗时。开度从 0.35 恢复到 1.0 可能需要很多次模型调用；这是当前空抓恢复很慢的一项明确瓶颈。
+
+### 9.3 源码与运行中的服务不一定相同
+
+本文核对时，两侧底层服务已经加载 24°/33° 包络及 2.5°/3°/3° 容差。新宿主 `d8607afeb4f0` 已加载提前预算续段修复。
+
+开爪 5 倍速改动则在底层服务启动之后写入磁盘，当前服务尚未加载：
+
+- `live_control.py`：监督策略下张开斜坡乘 5，speed=0.3 时命令速率由约 0.18 提升到 0.9 raw/s；闭合仍约 0.18 raw/s，非策略模式不变。
+- 服务新增 `gripper_open_speed_multiplier`，新服务应报告 5；旧服务不含此字段。
+- `open_empty_gripper` 读取这个字段，新服务允许准备阶段最多 0.5 raw 一步，旧服务继续 0.1；最终目标仍 4.8。
+- 正常 GPT `set_gripper` 张开提案上限仍是 0.1 raw。因此只提高驱动斜坡，并不等于空抓恢复只需一次模型决策。
+
+更新 Python 文件不会热更新已有进程。仅修改提示词、profile 或策略代码通常需要新宿主；修改 `live_control.py`、worker 或底层界限需要对应服务部署，并可能涉及 SDK 重新连接/回零。切换前先记录当前状态并安排现场支撑，部署后用接口回读参数确认，不要只看文件。
+
+## 10. 尚未解决的问题和建议调试顺序
+
+### 10.1 主要任务问题：接触位置与抓牢判断
+
+多轮实际出现：腕图里物体接近两指中心，模型就判断“已经包围”；闭爪和抬升指令成功执行，但物体仍在原支撑上。全局视角又常被腕部相机支架或机械臂遮挡。已经向提示词补充横向对中、插入深度和接触高度必须分别检查，但仍有重复空抓。
+
+不要仅凭 `execution_result`、开度很小、模型 `done`、电流变大或指尖挡住球就标成功。至少需要新画面中物体脱离原支撑，并在短距离抬升后持续随夹爪保持。
+
+建议下一位同学优先做可复查的小实验：固定相机与目标位置，记录闭爪前的全局/腕图、六关节、TCP、夹爪开度；比较试抬前后目标是否真的移动。先让一侧可重复成功，再扩展双臂，避免同时改变视觉判断、速度、TCP 和容差而无法定位原因。
+
+### 10.2 TCP 与视觉几何仍有估计误差
+
+官方 FK/IK 已加载且与 URDF 的软件约定核对，但约 8 cm TCP、相机安装外参、右爪端点和双底座关系没有完整实测。优先确认 TCP 实际抓取中心和 tool 轴方向，再积累局部已知动作与像素响应；需要稳定米制定位时补测相机参数和手眼关系。
+
+当前无标定图像阶段可以继续实验，不代表这些参数对精度没有影响。尤其不能因两臂长得一样就把坐标系、零位、相机关系也视为完全一致。
+
+### 10.3 夹爪动作的“等待超时”可能来自手腕关节
+
+`analysis/dual-policy-b70644bdf95d_unreviewed/` 的最后一次错误发生在开度 0.4 ->0.42 的回开动作：右爪反馈从 1.9669 到 2.0657，命令到 2.1510，开爪实际有进展；最终开度余差约 0.0853 raw。最近 0.6 秒右 J4/J5 的波动范围约为 0.568°/1.115°，没有满足 held joints 的 0.1° 稳定窗，于是 `_settle` 五秒后失败并让两臂释放。
+
+这次不能归因于“爪子没有动”，也不能只看最后关节残差低于 2.5° 就认定所有完成条件满足。后续需结合 `host_error.arm_feedback.samples` 分别分析 command 是否到位、关节波动、夹爪进展和 endpoint residual。若要修改稳定判定，应带上真实采样回放测试，保留不动、反向和过大余差的拒绝能力；目前尚未针对这次波动修改代码。
+
+### 10.4 程序退出释放保持
+
+真实故障、策略退出、连接断开或电源变化可能导致两臂回落。`pause_hold` 是使能状态下的保持；SDK PROTECT/stop 不是已验证的防坠制动。日志里“复位了”有时是失能后回落，有时是重连 SDK 初始化回零，必须看事件，不能混为一谈。
+
+建议后续完善受监督的模型暂停/人工接管接口，以及段内可及时处理的停止请求。当前不要把普通 `stop` 文字输入当作实时动作取消。
+
+### 10.5 双臂协调还缺什么
+
+已有双臂同时执行、先整体预检和一侧故障中止配对；尚没有两底座标定、桌面/目标/支撑物三维模型、连杆扫掠空间碰撞检查、接触力控制或实时视觉伺服。当前策略依靠图像和操作者确认工作区。后续若要减少人工监督，应补这些可测量的能力，而不只是放大数值阈值。
+
+### 10.6 推荐下一阶段顺序
+
+1. 固定现场布局，先复现一侧完整“靠近 -> 闭爪 -> 小幅抬起 -> 保持”，以图像证据验收。
+2. 分别测夹指接触高度、TCP 与命令开度/实际开口关系，尤其右臂转用端点。
+3. 复盘真实 settle 波动，区分驱动抖动、接触外力和完成条件问题，再决定是否调整算法。
+4. 在计划好的底层服务切换中部署开爪 5 倍斜坡，验证新字段和实际耗时；单独评估模型多次小开爪瓶颈。
+5. 让模型使用已验证的较长空旷接近路径；接触附近仍以当前图像和反馈决定动作。分析 `decision_timing` 与 `tool_timing`，分别处理推理和执行延迟。
+6. 两侧单独可重复抓取后，验证双臂同时抓取和保持；新增结果记录，而不是覆盖历史失败证据。
+
+### 10.7 最新暴露的问题：模型调用没有及时打断心跳监督
+
+最新运行 `analysis/dual-policy-d8607afeb4f0_failed/` 的最终失败时间为 2026-09-29 14:12 左右。第 8 段第 0 步的模型调用耗时约 62.224 秒；独立策略监督记录 `check_age_s=48.05606945298496`，超过 0.3 秒上限，宿主以 `R5ExecutionFault: Independent policy heartbeat stalled` 结束。该次不是 CAN RX 错误、IK 拒绝或夹爪 settle 错误，但清理会释放保持。
+
+这说明“模型调用有 25 秒 deadline”在当前 provider 调用路径上没有完全兑现：调用线程仍可能阻塞，健康检查先看到心跳年龄过期。后续应检查 `DeadlineAgent`、provider 子进程关闭和 `monitor_health` 的线程/进程边界，增加一个离线测试：模型调用超过 deadline 时，应先丢弃请求、保持或安全结束，不能让心跳停 48 秒后才报告故障。修复前不要通过放宽心跳到几十秒来掩盖问题；这会扩大模型阻塞期间的硬件风险。
+
+## 11. 怎么判断当前是否在运行、如何找证据
+
+策略启动会打印本轮目录，例如 `analysis/dual-policy-d8607afeb4f0/`。主要文件：
+
+- `config.json`：本轮模型、任务、范围等配置。
+- `events.jsonl`：观察、模型决策、工具执行、重试、预算、错误。
+- `frames/segment-NNN-step-NNNNN-{left,right,top}.jpg`：模型实际看到的图片；重试图片另有后缀。
+- `transcript.json`：模型交互记录。
+- `status.json`：结束后的状态记录；运行中不一定存在。
+
+结束目录可能附加 `_unreviewed` 或 `_failed`。`_unreviewed` 是尚无人标注结果，不表示运行健康或任务成功；即使 `run_finished.status=failed`，目录也可能是 `_unreviewed`。同时读取事件和状态文件。
+
+可用下面脚本只读提取某轮最近事件，避免直接输出包含大量轨迹点的完整日志。将路径改成需要检查的 run；它允许运行中最后一行尚未写完整：
+
+```bash
+.venv-policy/bin/python - <<'PY'
+import json, time
+from pathlib import Path
+paths = list(Path('analysis').glob('dual-policy-d8607afeb4f0*/events.jsonl'))
+if len(paths) != 1:
+    raise SystemExit('Set an unambiguous existing run directory first')
+rows = []
+for line in paths[0].read_text().splitlines():
+    try:
+        rows.append(json.loads(line))
+    except json.JSONDecodeError:
+        continue
+if not rows:
+    raise SystemExit('No complete events yet')
+print('run:', paths[0].parent)
+print('last event age (s):', round(time.time() - rows[-1]['at_s'], 1))
+interesting = {'model_decision', 'model_retry', 'tool_timing', 'tool_error',
+               'host_error', 'session_budget_renewed', 'run_finished'}
+for row in [r for r in rows if r['event'] in interesting][-8:]:
+    item = {k: row[k] for k in ('at_s', 'event', 'segment', 'step', 'status',
+            'name', 'detail', 'code') if k in row}
+    if row['event'] == 'model_decision':
+        item['decision'] = {k: v for k, v in row['decision'].items() if k != '_wire'}
+    print(json.dumps(item, ensure_ascii=False))
+PY
+```
+
+判断要同时看：宿主 PID 是否在、最新事件时间、是否等待模型/人工、两臂是否 enabled/holding、当前错误和最新图片。只有 PID 存在不证明还在推理；`give_up` 后等待人的宿主也会一直存在。
+
+如果需要新拍三路静态图，以下脚本只读相机，不发机械臂命令；`camera()` 返回三个值，不能只解包两个：
+
+```bash
+.venv-policy/bin/python - <<'PY'
+from datetime import datetime
+from pathlib import Path
+from visual_control import ArmWorkbenchClient
+out = Path('analysis') / ('manual-observation-' + datetime.now().strftime('%Y%m%d-%H%M%S-%f'))
+out.mkdir()
+for side, key, name in (('left', 'gemini', 'left'), ('right', 'gemini', 'right'),
+                        ('left', 'external', 'top')):
+    jpeg, sequence, device = ArmWorkbenchClient('http://127.0.0.1:8768', side).camera(key)
+    (out / (name + '.jpg')).write_bytes(jpeg)
+    print(name, sequence, device)
+print(out)
+PY
+```
+
+### 11.1 常见故障快速对照
+
+| 症状/文本 | 优先检查 | 不应直接得出的结论 |
+| --- | --- | --- |
+| can0 不存在 | USB 序列号、SLCAN 桥是否因拔线消失 | 不等于 GPT 或 IK 故障 |
+| can0 UP 但 RX=0、关节 null | 机械臂供电、转接器到机械臂线缆/焊点、波特率、实际接收 | USB 正常不证明电机正常 |
+| step/tracking tolerances differ | 8765/8766 实际报告参数与源码是否一致 | 不能删检查后继续用混合版本 |
+| Whole trajectory exceeds ... envelope | 整条 IK 路径和当前姿态；让模型缩小/改变目标 | 不一定是末端目标只有几毫米就必能走 |
+| gripper proposal rejected | command 开度、开/闭不同限额和 remaining budget | 不意味着爪子实际卡住 |
+| Action did not settle | 详细采样的进展、方向、稳定、残差、夹爪反馈 | 最终残差小不代表稳定条件满足 |
+| decision_deadline | 模型等待和重试事件、配置中的实际模型 | 不等于关节通信中断 |
+| enabled=false 后位置大变 | stop/异常清理/电源/SDK 重连事件 | 不能将变化忽略成几度硬件误差 |
+| 两臂不能同时手动动 | 当前 owner、普通客户端互锁、是否初始化/录制 | 不表示硬件不能并行工作 |
+| 球仍在支撑上但模型说夹住 | 闭爪前后和抬升后两视角证据 | 不能按模型文字给 success |
+
+## 12. 测试和修改后的验证
+
+本次交接文档是说明整理，不额外触发实机运动或服务重启。既有测试多数使用模拟反馈/相机/命令传输；官方 solver 测试会加载解算库但不连接 CAN。软件通过不能替代实物抓取验证。
+
+优先使用策略虚拟环境运行相关测试：
+
+```bash
+.venv-policy/bin/python -m pytest -q \
+  tests/test_motion_safety.py tests/test_policy_trajectory.py \
+  tests/test_r5_official_solver.py tests/test_r5_cartesian.py \
+  tests/test_r5_policy_backend.py tests/test_r5_dual_policy.py \
+  tests/test_r5_policy_deployment.py tests/test_supervised_policy.py
+```
+
+修改低层斜坡/保持/worker 时补充：
+
+```bash
+.venv-policy/bin/python -m pytest -q \
+  tests/test_live.py tests/test_worker_control.py \
+  tests/test_pause_hold.py tests/test_policy_hold_gate.py
+```
+
+完整回归入口是 `.venv-policy/bin/python -m pytest -q tests`。HTTP/双臂工作台测试会在本机启动模拟服务器，需要允许本机 socket；不应为了测试重启实际 8765/8766。`tests/browser_recording.cjs` 是另一个会访问工作台并写示范记录的浏览器检查，不要在当前实机任务中随手运行。
+
+近期证据：扩大包络相关回归曾有 `203 passed, 73 subtests passed`；返回姿态相关 `98 passed, 16 subtests passed`；开爪 5 倍速相关 `140 passed, 41 subtests passed`；新一轮启动前策略/profile/预算相关复核 `66 passed, 12 subtests passed`。这些是各自当时的相关测试集合，不是同一个完整套件计数，也不是今天写文档时重新跑出的总数。
+
+新修改建议至少记录：改了哪个层、针对哪条真实失败日志、相关离线测试、部署了哪些进程、实际回读参数、实机执行/抓取分别是否验证。避免只更新代码后把运行中的旧服务也标为已修复。
+
+## 13. 本次交接时的运行快照与重要实验
+
+### 13.1 2026-09-29 最新状态
+
+只读检查时间：2026-09-29（Asia/Shanghai）。这一小节记录的是快速复位前的历史检查，当时没有检测到运行中的 `app.py`、`robot_worker.py`、`record_workbench.py` 或 `supervised_dual_policy.py` 进程；快速复位后的最新现场状态以 13.3 和接手时重新查询为准，不能从历史 PID 推断。
+
+最近运行目录：`analysis/dual-policy-d8607afeb4f0_failed/`，绝对位置为 `/home/tuojing/arx_r5_control/analysis/dual-policy-d8607afeb4f0_failed/`。
+
+- `status.json`：`state=failed`、`error=R5ExecutionFault`、`physical_success_verified=false`、`outcome_source=runtime`。
+- `events.jsonl`：80 次 `model_decision`、77 条 `execution_result`，跨 8 个 segment；不是 80 个都代表成功执行，因为其中包含模型拒绝/重试/预算续段。
+- 最终事件：segment 8 的一次模型调用耗时约 62.224 秒，心跳年龄达到约 48.056 秒，超过 0.3 秒监督上限，宿主失败清理。
+- 最后一组模型输入图像记录在 `analysis/dual-policy-d8607afeb4f0_failed/frames/segment-008-step-00000-{left,right,top}.jpg`。此前已多次闭爪和试抬，但运行配置仍明确写着 `physical_success_verified=false`；没有可接受的双物体抓起证据。
+- 最新运行使用模型 `gpt-6-astra`、双臂 image-grasp profile 和同一旧代理 owner；旧 owner 只有在当前 8768 代理重新报告相同保留值时才可使用。
+
+这个小节取代此前“宿主仍在运行、目录未加后缀”的 2026-09-27 临时快照。临时快照仍保留在历史记录中，但不能作为当前状态。
+
+### 13.2 2026-09-27 历史启动快照
+
+2026-09-27 16:15:57（Asia/Shanghai）只读检查时，双臂宿主当时仍在运行，run 为 `analysis/dual-policy-d8607afeb4f0/`，已进入第 5 段；记录 44 次模型决策、41 条 execution_result。后来该目录结束并重命名为 `_failed`，最终失败原因见 13.1。
+
+本次会话进程记录如下，仅用于辨认，不要直接照抄 PID 做操作：
+
+| 服务 | 当时 PID | 说明 |
+| --- | --- | --- |
+| 左工作台 8765 | 2073188 | can0，24°/33°包络已加载，5 倍开爪尚未加载 |
+| 左 SDK worker | 2073835 | 隶属左工作台 |
+| 右工作台 8766 | 2073423 | can1，同上 |
+| 右 SDK worker | 2074272 | 隶属右工作台 |
+| 双臂代理 8768 | 2410559 | 预留 owner 如下 |
+| 双臂策略宿主 | 2548291 | 本次调试工具终端会话 32291，不是系统端口 |
+
+当时的代理 owner 是 `dual-policy-18470265f309485bbbfb61e8103bbe33`。如果继续复用这个代理，应从 `/api/arms` 再读一次；如果创建全新代理则生成新的 owner 并同步给唯一的协调器。
+
+| 记录目录 | 用途/结论 |
+| --- | --- |
+| `analysis/gripper-cycle-7d604c8bd7c1/` | 夹爪独立开合证据，不能当抓球成功 |
+| `analysis/dual-policy-9de9db4b3d4f_unreviewed/` | 过早闭爪、空抓、开爪预检错误的复盘 |
+| `analysis/dual-policy-331fc4c636dd_unreviewed/` | 多次闭合/试抬未抓起；保存返回参考的来源 |
+| `analysis/dual-return-e8c7d3902ee7/` | 两臂返回保存参考成功 |
+| `analysis/dual-policy-b70644bdf95d_unreviewed/` | 开爪动作期间右手腕稳定窗超时，成对释放 |
+| `analysis/restart-closer-20260927-160158/` | 操作者把物品移近后的重启前状态和三图 |
+| `analysis/dual-policy-d8607afeb4f0_failed/` | 最新尝试；第 8 段模型调用阻塞导致心跳失败，未验证抓取 |
+
+`robot.log` 在历史检查时已约 516 MB；`analysis/` 和图片也持续增长。留意磁盘余量，停止相关进程后再规划归档/日志轮转，不要在运行中直接删正在写入的证据文件。本目录当前未检测到项目 Git 仓库，迁移或大改前应另存源码、profiles、模型配置和需要保留的实验记录；不要只搬走几个 Python 文件。
+
+### 13.3 2026-09-29 快速复位结果（最新）
+
+用户要求的复位定义为“六关节保持摆正姿态、两侧夹爪闭合”。本次先发现外接 RGB 相机被遗留的 `gst-launch-1.0` 采集进程占用，导致监督取帧超时；清理占用后才允许动作继续。没有绕过相机监督或 CAN worker。
+
+- 当前双臂状态：`can0` 左臂和 `can1` 右臂均 `enabled=true`、`control_state=holding`、`robot_status=ready`、`error_codes=[]`。
+- 当前协调 owner：`dual-policy-18470265f309485bbbfb61e8103bbe33`，由 8768 双臂工作台保留；不要再启动第二个 owner。
+- 当前夹爪：两侧 `gripper_target_raw=0.2327533722`；实测反馈约左 `0.1335`、右 `0.1324`，均已到闭合端附近，且无 pending target。
+- 本次闭合过程没有发送关节目标，关节保持在复位时的实测姿态；最新关节反馈仍记录在 8765/8766 的 `/api/state`。
+- 当前保持脚本进程是本次现场临时实例（源码已同步保存为 `tools/fast_reset_closed.py`），只读检查确认它正在持续给两侧发送 heartbeat；不要杀进程或发送 `stop`，除非已经准备好支撑/接管机械臂，因为释放保持可能导致姿态回落。
+
+复位脚本（仅在两臂路径清空、操作者在旁、8765/8766/8768 和相机都已确认可用时运行）:
+
+```bash
+cd /home/tuojing/arx_r5_control
+.venv-policy/bin/python tools/fast_reset_closed.py \
+  --url http://127.0.0.1:8768 \
+  --paired-client dual-policy-18470265f309485bbbfb61e8103bbe33
+```
+
+脚本先为每侧建立受监督的 powered hold，再按最多 1.0 raw 的闭合步进把目标降到 `0.2327533722`，整个过程不改变六关节目标；完成后输入 `stop` 或按 `Ctrl+C` 才释放保持。`--paired-client` 必须与 `GET /api/arms` 的 `paired_policy_client` 完全一致。闭合值来自当前 profile 的 R5 原始单位，不是毫米。
+
+### 13.4 2026-09-30 双臂抓取尝试（未成功）
+
+本次按“左臂抓 tennis、右臂抓可乐瓶”启动 `gpt-6-astra` 双臂策略，运行目录为 `analysis/dual-policy-2687de4db2c9_unreviewed/`。启动参数包含 `--open-empty-grippers --auto-renew-budgets --max-decisions 12 --max-segments 12`，两臂均正常建立保持并完成空爪张开。
+
+- 策略共运行 3 段，所有 CAN 回包和错误码正常；多次接近、闭爪和小幅抬升动作均有执行记录。
+- 外部图像始终没有形成“物体脱离支撑”的可验证间隙；模型多次依据腕部视角把“物体位于指间”当成接触/保持证据，随后又重新张开、下降和闭合。
+- 右臂有若干方向/步幅请求被预检拒绝，之后改用小步执行；这属于策略目标与已观测步幅包络不一致，不是 CAN 故障。
+- 最终事件为 `run_finished`、`status=budget_exhausted`、`task_status=unreviewed`、`grasp_verified=false`；没有任何一侧物体被验证抓起。
+- 宿主结束后释放保持，目前两臂均为 `enabled=false`、`owner=null`；两侧当前关节已偏离复位姿态，下一次实验必须先重新读取画面和反馈，不能直接复用本轮绝对目标。
+
+这次结果说明当前主要问题是视觉空间关系和接触深度判断，而不是动作接口或通信。后续应先用外部视角建立目标中心、夹指平面和支撑间隙的明确检查，再允许闭爪和抬升；不要把这次运行记录为抓取成功。
+
+### 13.5 2026-09-30 CAN 恢复、新视角与后续三轮尝试
+
+本节取代前面各轮的即时状态描述，历史结果保留用于复盘。
+
+- CAN 恢复：两接口原先虽为 UP，但 SDK 锁存电机故障，左臂回包过期。经 API 断开旧 worker、按已核实序列号重建 `slcand`、逐臂重新连接 SDK 后，两臂恢复新鲜六关节反馈与空错误码。SDK 连接包含初始化/可能回零，不是只读操作。
+- 第三视角已移到工作区另一侧。新画面中网球在画面右边、红罐在画面左边；物理左臂仍是 `can0`、左腕 `CV2C8610015R`，物理右臂仍是 `can1`。不能再按旧画面左右分配目标，也不能把斜俯视的像素上下直接当作基座 Z。
+- `analysis/dual-policy-c9d0a934d085_unreviewed/`：使用原场景上下文启动，换相机后在同一宿主续段，最终到第 8 段 `give_up`。发生过闭爪和试抬，物体仍由支撑承托，没有成功抓取证据。换视角后的续跑是第 6 至 8 段，不是另跑了 8 段。
+- `analysis/dual-policy-a4b85ba01910_failed/`：复位后使用新增 `r5_dual_tennis_cola_20260930_context.json`，要求确认高度、插入深度和离开支撑的证据。第 2 段左臂 J3 目标约 -1.646°，实测约 +0.907°，等待未稳定后失败；此前也有官方 IK 分支拒绝。没有策略闭爪。
+- `analysis/dual-policy-13ff4226ee8d_failed/`：再次启动同一模型 `gpt-6-astra`，先张开空爪，随后共 3 段、36 次 `move_to` 决策，19 条 `execution_result`；没有模型 `set_gripper` 决策。16 条工具错误含 2 次 `motion_not_executed`、1 次步幅包络拒绝、13 次 `A fresh, unconsumed observation is required`。另有 7 次模型超时/无效 JSON 重试。不能把 36 次决策都算成已执行动作。
+
+最后一轮结束时宿主报 `enabled must be True; policy_execution_available must be True; An explicitly assigned control owner is required`；右侧服务实际报告 `Timed trajectory tracking limit reached`。先前口头解释为“模型等待期间租约失效”不成立，应以此纠正。右 J3 最后目标约 -1.536°，记录到的实测仍约 +0.229°；这与上一轮左 J3 的现象相似，是需要检查驱动限幅、机械可达范围和模型范围是否一致的线索，尚未证实具体原因。不能通过放宽跟踪阈值来宣称问题已解决。
+
+后续复位及收尾：
+
+1. `/tmp/full_reset.py` 使用保存参考 `dual_return_start_20260927.json` 返回关节。该临时脚本只响应 Ctrl+C，输入 `stop` 不会退出，不能与持久的 `tools/fast_reset_closed.py` 混淆。
+2. 本次复位在右臂已经距参考不到 1° 后，预算续段重设命令参考，又重复追赶同一小偏差，触发 `Action did not settle` 并释放两臂。这是返回流程待修问题，未修改驱动或安全阈值。
+3. 重新查看全局图，确认两臂已在起始姿态附近、夹爪为空；只读核对两臂最大参考偏差都在现有 2.5° 容差内后，使用 `tools/fast_reset_closed.py` 恢复保持并闭爪，没有再次发送关节复位轨迹。
+4. 13:47 实测：两臂 `ready`、`enabled=true`、`moving=false`、`control_state=holding`、`error_codes=[]`；夹爪目标均为 `0.2327533722` raw，实测左 `0.134279`、右 `0.133516`。参考姿态最大偏差左 `1.398823°`、右 `2.273142°`。保持程序继续运行，GPT 推理已停止。
+
+收尾证据保存在最后一轮目录的 `post_run_hold_state.json`、`post_run_hold_external.jpg` 和 `post_failure_external.jpg`。场景上下文文件只保留经验提示，不是策略已修复、空间标定完成或模型在线训练的证明；其中历史图像方向和旧绝对姿态必须由新图与实测覆盖。
+
+### 13.6 2026-09-30 顺序抓取：先网球，再可乐
+
+用户要求总结失败经验，降低夹指的实际接触高度，再按左臂网球、右臂可乐顺序执行。新上下文为 `r5_sequential_tennis_cola_20260930_context.json`，移除了旧轮次冗长、互相冲突的方向描述。当前外景是斜上方视角：物理左臂/球在画面右侧，物理右臂/可乐在画面左侧；不是已标定的俯视相机。`r5_dual_policy.py` 也不再给模型固定的历史 -Y 方向提示。
+
+本轮要求：张爪，检查夹指内侧是否达到球赤道/罐身高度和足够插入深度，确认后再闭合；左臂小幅抬起并经新图确认球离开支撑且被保持后，再动右臂。顺序通过任务上下文约束，尚无独立的视觉成功判定器。不能将两指在腕图中投影包围物体当作真实接触。降低 TCP 时若固定腕姿导致 IK 拒绝或负 J3 跟踪异常，应重新选择可达腕姿和接近路径，不可重复强推。
+
+增加 `held_policy_handoff.py` 和宿主选项 `--adopt-held-from-pid`，用于从已经完成闭爪、只维持心跳的 `tools/fast_reset_closed.py` 接管保持。它核对原进程路径、URL、owner 和双臂空闲保持状态，先启动新宿主两侧 watchdog，再通过 pidfd 终止旧辅助进程，避免旧进程正常退出时发送 stop；最后复核目标未改变，才允许张爪/模型动作。仅适用于该特定辅助程序及默认闭爪值，不适用于任意运行中的策略或运动进程。两臂最终停止/异常退出的失能回落问题仍存在。
+
+本轮实机交接事件 `powered_hold_adopted` 已确认未释放保持、关节目标未改变。运行目录：`analysis/dual-policy-4fab7ce511dc/`；使用 `gpt-6-astra`、每段 8 决策、最多自动续至 6 段，之后在核对状态/画面后人工输入 continue 续到第 9 段。本轮共 67 次模型决策，执行 36 次 move_to、17 次 set_gripper、8 次只读 check_path，另有 6 次工具拒绝；没有底层跟踪故障或失能回落。执行条数不等于成功抓取次数。
+
+**结果与经验：**
+
+- 左臂：先前伸和侧移对齐，再配合小幅腕姿变化降低实际接触位置，避免固定腕姿反复下压。第 3 段完成收拢至归一化开度 0.8 并试提，第 4 段进一步核验。全局图显示球上移、支撑未动，右腕侧视露出球下方支撑凹槽，左腕图中球持续留在指间。后续右臂调试期间仍保持网球。证据：`tennis_lift_external.jpg`、`tennis_lift_gemini.jpg`、尤其 `tennis_lift_gemini_right.jpg`，以及最终保持图。未测量实际抬升毫米数。
+- 右臂：第 6 段收拢至 0.8 后试提，罐底仍在桌面；第 7–8 段重新张爪、补深度并尝试不同俯仰，过程中罐口曾完全遮挡腕图、相机壳靠近罐沿，模型后退恢复间隙。第 9 段逐步收拢至 0.62 后再次试提，仍未确认离桌。故“把夹爪压低”有帮助，但不足以解决罐体侧向包围、插入深度和相机外壳间隙问题。没有证据证明单純增加夹力或重复抬升能解决。
+- 第 8 段全局画面曾有人手进入，模型临时只做 check_path；之后判断人手退出再执行。全局视角也发生轻微变化，因此不可用不同阶段像素坐标差直接当成物体实际位移。
+- 本轮没有关节/通信故障；右臂失败应优先分析接触几何和近距离遮挡。需要在保持壳体间隙的条件下重新评估夹指对罐身的真实位置；目前未实现可靠的接触传感、完整碰撞模型或几何标定。
+
+**收尾（14:38）：** 第 9 段 `budget_exhausted` 后未再输入 continue；宿主继续保持，未 stop、未复位、未开左爪。左夹爪目标 `3.8865506744` raw、反馈约 `3.795681`；右目标 `3.0644462814` raw、反馈约 `2.964447`。这些值只记录本轮，不能作为下一次无条件抓取目标。最终状态、三路图和人工复核结果分别为 `operator_review_hold_state.json`、`operator_review_hold_*.jpg`、`operator_review.json`。运行目录尚未由 RunRecorder 关闭，因为宿主仍承担保持；不能为保存 `_completed` 后缀而停止宿主。
+
+启动方式与原宿主相同，增加新的上下文；只有确认当前保持者是上述辅助程序时才增加接管参数，PID/owner 必须现场重新读取：
+
+```bash
+.venv-policy/bin/python supervised_dual_policy.py \
+  --supported-supervision --wait-for-start \
+  --paired-client <当前 api/arms 中的 paired_policy_client> \
+  --adopt-held-from-pid <已完成闭爪的 fast_reset_closed.py 进程 PID> \
+  --input-json r5_sequential_tennis_cola_20260930_context.json \
+  --open-empty-grippers --auto-renew-budgets --max-decisions 8 --max-segments 6
+```
+
+出现 `holding_waiting_for_start` 后输入 `start`。离线验证：配置 `--check` 通过；`tests/test_held_policy_handoff.py`、`tests/test_r5_dual_policy.py`、`tests/test_supervised_policy.py` 合计 45 项测试及 13 项子测试通过。
+
+另已核对上一轮 13 次观测失效：对应模型耗时全部超过 30 秒（约 31.2–50.9 秒）。执行层观测有效期为 30 秒，模型等待上限为 60 秒，两者不一致会导致合法返回却无法执行。当前保留执行层有效期，未把旧图动作伪装成新观测；该延迟适配问题仍待修复。
+
+后续优先排查观测生命周期/时效导致的大量预检拒绝、J3 负角目标的实际可执行性，以及复位续段重复修正。修改应先离线验证，再做有看护的小幅实机测试。已有保持进程退出会释放关节，本日曾观测到明显下垂，不能把 stop 当作保持切换。
+
+## 14. 接手当天最短操作清单
+
+1. 阅读第 13 节后重新查进程、两臂状态与三图，确认物理左右、控制权和实际摆放。
+2. 先决定复用现有服务还是冷启动；不要为“重新抓一次”无故重连 SDK。
+3. 运行离线 `--check`，确认使用正确的双臂 profiles、场景 JSON 和模型配置。
+4. 按第 8.4 节启动唯一的双臂宿主，建立保持后检查画面，再输入 `start`。
+5. 同时看模型决策和实际图像；记录接近、闭爪、试抬分别是否真正发生。
+6. 若失败，保留最后一次动作和三图，按第 10、11 节定位，更新本文或当日记录；成功需留物体脱离支撑并保持的证据。
+
+
+### 13.7 2026-09-30 15:11 双臂复位与闭爪
+
+用户调整右侧物品并要求先复位。本次未断开 SDK、未失能回落。新增 `tools/held_dual_reset.py`，通过 `ParkedPolicyHandoff` 接管已结束自动续段、停在 `device_finish/holding` 的策略宿主。交接核对 PID 对应脚本、owner、URL、打开的运行日志，以及日志在交接前后保持不变；新 watchdog 先启动，再退出旧宿主。持物开度在交接时保持不变。
+
+最初画面左爪仍有网球；接管完成时的 `adopted_top.jpg` 已显示球在桌面、黑色支撑移位、两爪空置。随后执行过一次 6 mm 左臂下降，再依据新图改走空爪复位流程。因此本次不能记作“程序将球成功放回支撑”；物品变化发生在该下降动作之前。
+
+复位流程：两侧张爪至 4.8 raw，检查新布局下的退离路径，分 13 个有界关节段返回 `dual_return_start_20260927.json`，再分别闭合到 0.2327533722 raw。整个过程无底层故障，最终继续带电保持。左、右实测闭爪反馈分别约 0.133898、0.133516；参考姿态最大偏差 1.42°、2.25°。没有启动下一轮推理。
+
+修复 `dual_return_pose.return_plan` 的到位判断：命令值和实测值都在既有 2.5° 容差内即完成，防止预算续段重设保持参考后，反复追小残差而触发无进展故障。超出容差、命令到位但实测未到位等情况仍受检查。相关 55 项测试及 13 项子测试通过。
+
+证据目录：`analysis/reset_after_sequential_20260930/`，含交接、下降、张爪、复位各阶段图像/状态、`events.jsonl`、`verification.json`、`verified_external.jpg`。当前保持程序的终端会话为 9449（仅当时记录，接手须重新核对）。程序命令 `stop` 会释放保持；不要为了启动下一轮而直接停止它。原 `--adopt-held-from-pid` 只支持 fast_reset_closed 辅助程序，不能不加适配地用于该复位宿主。
+
+
+### 13.8 2026-09-30 塑料瓶往返放置，然后网球放置
+
+本轮新任务必须严格分三阶段：右臂把白盖透明塑料瓶放稳在黑色支撑上并松爪；右臂重新抓瓶返回原桌面位置、松爪退开；最后左臂抓桌面网球放到空出的黑色支撑上并松爪。原位参考照片保存在 `analysis/bottle_roundtrip_tennis_20260930/initial_external.jpg`，通过 ImagePart 随输入提供给模型；不把照片像素当成基座坐标。瓶内有液体，保持瓶盖闭合、瓶身直立。支撑有凹槽，放置必须验证底部稳定承托，不能只悬停或在边缘放手。
+
+代码调整：`r5_dual_policy.py` 去掉写死的“两物体都抓起并保持才 done”条件，改为按当前任务逐项验证，放置任务需承托、开爪、观察稳定、退离。新 `CompletedResetHandoff` 与宿主 `--adopt-reset-from-pid` 支持核验完成复位日志、保存姿态、当前闭爪保持及进程身份后接管；48 项相关测试和 13 项子测试通过。该路径本轮未实机使用：尝试接管前，旧保持程序已经因本地请求超时退出，准入检查拒绝后没有发送动作。后续直接使用空闲 SDK 建立保持，无 SDK 重连或回零。
+
+实际启动入口为 `supervised_dual_policy.py`，参数 `--supported-supervision --wait-for-start --paired-client <当前 owner> --input-json r5_bottle_roundtrip_tennis_20260930_context.json --open-empty-grippers --auto-renew-budgets --max-decisions 10 --max-segments 12`。输入 start 后先张空爪，模型使用 `gpt-6-astra`。本轮仍保留 30 秒观测有效期、60 秒模型等待上限和原有轨迹/跟踪限制。运行证据在 `analysis/dual-policy-7b2084caf868/`。启动不代表完成；搬运和放置都必须单独核验。
+
+#### 实际执行结果与人工接管
+
+原自动宿主曾把仍在桌面的瓶子判为已抓起，随后移动空爪；全局图和右腕图独立复核发现该误判。新增 `ObservingPolicyHandoff`，在原宿主处于观察/推理且两臂静止时，由替代相机/独立 watchdog 先启动，再核对旧进程脚本、owner、URL 和实际打开的运行日志。使用 pidfd 暂停全部旧线程，连续检查目标没有改变、没有活动轨迹，再终止旧宿主，避免执行其释放保持的退出清理。该路径本轮已实机使用；不是任意活动轨迹的通用接管。
+
+`tools/held_policy_review.py` 接管后保持两臂、持续监督三图，接受一条原版 GPT-Policy 工具 JSON，再保存图像和状态。Codex 逐步查看图像并选择动作，没有自动模型循环、自动重放或在线训练。EOF 保持；进程终止或真实监督故障仍会释放关节。普通参数/数值预检拒绝保持不动；新增显式捕获 `TrajectoryIKError` 和 JSON schema 验证错误，避免把执行前的规划拒绝当成设备故障。该异常处理更新不热加载到已有进程。
+
+| 阶段 | 独立复核结果 | 证据目录内的文件 |
+| --- | --- | --- |
+| 右臂抓瓶并离桌 | 完成；多次垂直上移后可见瓶底与桌面的间隙，瓶子留在指间 | `bottle_lifted_top.jpg`、`bottle_lifted_right.jpg`、`bottle_lifted_state.json` |
+| 瓶子放到黑色支撑并松爪 | 完成；下降至承托、逐步回开、完全张爪并退开后瓶子仍站在支撑上 | `bottle_on_support_top.jpg`、`bottle_on_support_left.jpg`、`bottle_on_support_state.json` |
+| 右臂重新抓瓶、返回桌面并松爪退开 | 完成；返回接近初始瓶底位置，完全张爪、向后退开后瓶子仍直立 | `bottle_returned_top.jpg`、`bottle_returned_right.jpg`、`bottle_returned_state.json` |
+| 左臂抓桌面球并放上黑色支撑 | 抓起并持续夹持已核验；放置未完成，首次小幅松爪时宿主退出 | `analysis/tennis_after_operator_reset_20260930/` 的 `tennis_lifted_*`、`tennis_transport_clearance_*`、时间戳三图和退出后状态 |
+
+前三行证据位于 `analysis/bottle_review_20260930/`；该目录 `milestones.json` 分阶段记录结果。黑色支撑在瓶子放置过程中略有移位/旋转，不能沿用最初像素位置。瓶子返回采用当前图像检查，未宣称精确到毫米。
+
+#### 两次中断与恢复
+
+1. 瓶子往返完成后，两臂复核宿主因 `Supervised camera frames are stale` 退出。相机新鲜度上限仍是 0.5 秒，未放宽。保护退出释放两臂，右臂明显下垂；事后读取右 J4 约 91.85°，超出模型上限约 73.91°。瓶子仍站在桌面。记录为 `analysis/bottle_review_20260930/after_fault_*`，不能把这次下垂归为用户移动物品或普通跟踪误差。
+2. 恢复时只使能仍在有效姿态范围的左臂，不使能或复位右臂。新 `tools/single_policy_review.py` 只调用选定臂，持续检查另一臂保持失能、静止、无 owner，同时仍观察三图。它使用现有 SDK 的 `prepare_hold`，不会重连、回零或自动抓取。最初无 PTY 的终端 stdin 被关闭，EOF 保持但不能再发指令；通过 `SingleReviewHandoff` 接管到可交互的 PTY，期间未释放左臂保持。交互运行务必使用保持 stdin 的终端。
+3. 第一轮左臂接近后，官方 native `inverse_kinematics` 抛出 `RuntimeError: Inverse kinematics computation failed`，旧适配只捕获 ValueError，导致宿主退出、释放左臂。`r5_official_solver.py` 现只把这一条明确的 native 不收敛异常转为无效候选并保留 seed；上游 ContinuousIK 继续执行原有连续修正和完整轨迹审计。未知 RuntimeError 仍传播，未放松 IK 残差或关节限制。恢复后使用较高的接近路径，避免负 J3 路径，再用实时图像逐步下降。
+
+单臂恢复目录：`analysis/tennis_review_20260930/`（首个 EOF 保持实例）、`analysis/tennis_review_live_20260930/`（IK 异常退出）、`analysis/tennis_review_recovery_20260930/`（最新实例）。原双臂复核会话已经退出，不要继续向历史会话发指令。单臂实例不是自动推理服务。
+
+单臂手工复核的冷启动入口如下，**只适用于两臂当前都已失能、静止、无人持有 owner，选定臂姿态有效且工作区已复核的情况**；不能在现有保持宿主还活着时直接再运行：
+
+```bash
+cd /home/tuojing/arx_r5_control
+.venv-policy/bin/python -u tools/single_policy_review.py \
+  --arm left --paired-client <api/arms 返回的 paired_policy_client> \
+  --output analysis/<新的唯一目录>
+```
+
+同类单臂保持实例之间的受检查交接使用 `--adopt-review-from-pid <现场核对的旧单臂宿主 PID>`，其余 arm、owner 和 URL 必须一致，使用新的日志目录和可交互终端。这条入口保留选定臂原来的关节与夹爪目标，另一臂必须失能；不能用于接管双臂自动宿主。
+
+命令：`observe` 保存三图/状态；`renew` 在实测保持处续预算；原单臂 `move_to`/`move_eef_chunk`/`check_path`/`set_gripper` JSON 执行一条有界工具。单臂 `move_to.arguments.target` 直接包含 `pose_xyzquat`，`set_gripper.arguments.gripper` 是归一化开度，不是双臂 `positions`。`open-supported` 使用已验证的快速张爪斜坡，**只在空爪或已独立确认物体受到承托时调用**，程序不自动判断承托。`renew` 会重新锚定实测关节/TCP，不证明抓取，也不允许绕过故障。
+
+#### 当前保持快照与后续诊断
+
+先前人工复核时：左臂带电保持，夹爪目标归一化开度 0.65；右臂失能，SDK/CAN 仍反馈。瓶子在接近原位的桌面上、黑色支撑空置、网球仍在桌面。该宿主当时 PID 为 `2910306`，终端会话 `26022`，目录 `analysis/tennis_review_recovery_20260930/`；**此实例在下一次下探续试中已经退出，不能继续向它发动作或当成当前保持者**。最新状态见本节末尾。
+
+网球闭爪/试提失败的确切原因尚未确定，不能据全局像素重合、腕图居中或夹爪反馈正常就断言接触正确。已尝试加深插入、降低姿态、压低及放平腕姿、分段收爪；最新 30 mm 只向上试提仍未让球离桌。后续需要现场侧面观察或能看清两指与球中部高度关系的新画面，区分高度不足、插入深度不足和夹持力/开度问题，再有根据地调整；不要重复同一未奏效试提或无证据继续下压。右臂恢复前还需处理其超模型范围的下垂姿态。
+
+本轮新修改验证：官方 solver 的明确不收敛/未知异常分支、观察期接管时先冻结再核对再退出、活动状态/不健康 watchdog/迟到目标变化拒绝；`tests.test_held_policy_handoff` 与 `tests.test_r5_official_solver` 共 14 项离线测试通过。此测试结果不是机械接触或可靠抓取认证。
+
+随后扩大到 Cartesian、双臂适配和监督宿主的相关回归，共 81 项测试通过。复现命令：`PYTHONPATH=.:tests .venv-policy/bin/python -m unittest tests.test_held_policy_handoff tests.test_r5_official_solver tests.test_r5_cartesian tests.test_r5_dual_policy tests.test_supervised_policy`。测试目录中的辅助模块使用顶层导入，因此该命令需要把 `tests` 加入 Python 路径；不需要修改测试代码的导入关系。
+
+#### 操作者确认进一步下探后的续试
+
+用户现场确认左臂夹爪还能下探。先重新读取三图与实时状态，确认左臂仍保持、右臂失能；网球仍在桌面。左爪张开至 4.8 raw，然后在固定 XY/腕姿下执行一次 15 mm 垂直下降，实际图像中球未移位。拟继续下降 10 mm 时，旧宿主先因相机帧超过 0.5 秒退出，故第二步未执行，也没有本轮闭爪/试提。日志 `host_error` 中 `camera_fault=null`，而上一采集开始距错误约 0.64 秒，符合采集暂时延迟触发新鲜度检查；尚未确定延迟的底层原因。
+
+退出后的读取显示两臂都失能：左 J4 约 78.46°，右 J4 约 91.88°，均超过模型约 73.91° 的上限。图像显示关节下垂，瓶子仍直立、网球仍在桌面。证据位于同一恢复目录的 `after_camera_fault_top.jpg`、`after_camera_fault_left.jpg`、`after_camera_fault_right.jpg` 和两侧 `after_camera_fault_<arm>_state.json`。这次未重新使能超范围姿态；需要操作者稳固支撑并将左臂恢复到有效的初始折叠姿态后，再从新状态建立保持。
+
+针对该重复故障，新增 `StationaryCameraGate`，目前**只在单臂人工复核宿主启用**：已建立有效带电保持、无活动动作、硬件反馈/owner/保持目标正常时，相机失效只阻止新观察/动作，继续独立硬件心跳并维持原目标。每条新命令仍要求新鲜相机；运动、预算重锚和开爪过程中相机失效仍走原保护逻辑。真实硬件故障、非静止状态或控制权改变不能通过该入口继续保持。默认自动策略和双臂复核宿主仍采用原相机保护行为，未整体删除保护。
+
+`R5PolicyBackend.execute_trajectory` 另在 resume 后、实际下发轨迹前增加新鲜图像检查，阻止预检后刚发生图像失效的轨迹下发。`tools/single_policy_review.py` 捕获空闲观察失效并返回拒绝，记录相机阻塞/恢复状态；相机采集线程发生永久异常时不会自动重启，也不能执行新动作。
+
+上述修改当时共 96 项相关离线测试通过，覆盖静止相机超时保持且拒绝新工作、恢复后无需重新使能、运动中仍保护、非静止/坏反馈仍拒绝，以及 resume 后相机失效时轨迹未下发。命令：`PYTHONPATH=.:tests .venv-policy/bin/python -m unittest tests.test_stationary_camera_gate tests.test_r5_policy_supervisor tests.test_r5_policy_backend tests.test_r5_cartesian tests.test_supervised_policy`。新版之后已用于下面的实机续试；实机执行过接近、闭爪、抬起和运输，但这不证明已覆盖相机故障的全部实机场景。
+
+#### 两臂人工复位后的抓起与松爪中断
+
+用户回复“左右两臂都已经复位”后，两侧实测角度都恢复到模型有效范围、失能且无 owner。新单臂实例只使能左臂，右臂保持初始姿态失能。使用 `StationaryCameraGate` 的实际入口如下；该实例终端会话为 `81334`，已在本段最后的松爪超时中退出，不能向它继续发送指令。
+
+```bash
+.venv-policy/bin/python -u tools/single_policy_review.py \
+  --arm left \
+  --paired-client dual-policy-18470265f309485bbbfb61e8103bbe33 \
+  --output analysis/tennis_after_operator_reset_20260930
+```
+
+操作者同时调整了全局相机：这一轮画面中，物理左臂/白色相机安装件在屏幕右边，右臂/瓶子在屏幕左边。实机横移复核证明当前左臂 **+Y 向屏幕右边、-Y 向屏幕左边**，+X 前伸大体向屏幕下方。首次运输用了相反的 Y 符号，画面暴露偏差后已修正；之后不能沿用“机器人 +Y 必然等于相机画面左边”的假设，也不能把这些图像方向转用给右臂或重新摆放后的相机。
+
+本轮有效抓取：左臂先展开、再前伸下降，名义指尖 TCP 命令位置约 `[0.338876, -0.088622, 0.072632]` 米，四元数 xyzw 约 `[0.024715, 0.823700, -0.088137, 0.559588]`。先从接近全开收至归一化 `0.80`，再收至 `0.65`。分开执行 30 mm 和 40 mm 向上试提后，全局图可见球离开桌面、腕图中球持续留在两指之间；随后再次上提并横移也持续夹持。证据为 `tennis_lifted_top.jpg`、`tennis_lifted_left.jpg`、`tennis_lifted_state.json` 以及 `tennis_transport_clearance_*`。这说明本次降低夹持位置奏效，但坐标只适用于本次布局，不是通用抓球点。
+
+运输阶段先抬高，预算临界时通过 `renew` 在实测保持处续段，夹爪仍维持 `0.65`；该动作会改变命令 TCP/腕姿参考，不能假设下段沿用上段名义位置。接近支撑后修正横向和前后落点，逐段下降。最后命令 TCP 约 `[0.396038, -0.222101, 0.148142]` 米，实测约 `[0.397334, -0.221927, 0.152897]` 米；球底接近中央凹槽，但闭爪状态的图像还不能证明完全承托。
+
+第一次小幅放松 `0.65 -> 0.67` 后，约 5 秒触发 `Action did not settle; no grasp/contact inferred from a stall`。当时关节残差约 0.45° 以内、无 SDK 错误；旧日志缺少该动作的完整夹爪轨迹，因此不能精确重建最后 5 秒的 raw 反馈。代码中找到并离线复现了一个明确的误判路径：小幅夹爪指令的初始/最终反馈都在既有 `0.15 raw` 容差内，但因偏置、回差或死区没有足够的增量进展，仍被要求达到指令增量的 50%，从而超时。宿主退出释放关节，左臂下垂并接触/移动了支撑；网球离开当前三图，不能记作放置成功。
+
+修复位于 `r5_policy_backend.py`：既有 `0.15 raw` 位置容差不扩大，仅当指令增量、初始到目标距离及实测变化都在该容差内时，允许稳定反馈通过小步到位判断。仍要求驱动实际提交完整目标、至少 5 次稳定采样、夹爪最终位置在容差内、关节原目标保持有效；较大未到位、振荡和较大反向位移仍失败，结果始终 `grasp_verified=False`。故障消息新增夹爪初始/目标/命令/反馈 raw，单臂宿主 `host_error` 新增完整 `execution_feedback`，方便后续区分原因。
+
+该修复的 101 项相关回归通过，之后新增较大反向编码器变化的用例也通过；对应套件现在共有 102 项，夹爪/后端 34 项复核通过，`py_compile` 通过。新增六个用例覆盖小幅松爪的偏置反向变化、容差内无明显变化、目标仍未提交、反馈振荡、过大反向变化和大幅闭爪卡住。软件验证未代替实机松爪重试。
+
+**退出后的最后有效状态：** 当时两侧 SDK/CAN 仍反馈且无错误，两臂失能、静止、无 owner；左 J4 约 78.54°，超过模型上限 73.91°，不能从该姿态直接使能/自动复位。右臂当时仍在有效初始姿态。退出后的证据为 `after_gripper_fault_top.jpg`、`after_gripper_fault_left.jpg`、`after_gripper_fault_right.jpg` 和两侧 `after_gripper_fault_<arm>_state.json`。已请求操作者稳固支撑左臂、恢复有效初始姿态，并把网球放回可见桌面位置。
+
+**最新只读检查：** 后续两臂均显示 `robot_status=fault`、`worker_fault_reason=SDK motor fault`，六个关节角为空，错误码重复为 `2,12,22,32,42,52,62`；没有活动 owner，两臂失能。`can0/can1` 仍 UP，但 `rx_age_ms` 已达到约 48 万/49 万毫秒，数分钟没有新的电机回包。操作系统接口存在不代表电机通信已恢复，无法据此判断当前姿态，也不能无反馈继续使能。未断言具体断电或线缆原因，需要确认本体供电及连接，恢复有效反馈后再处理姿态。记录为 `final_runtime_snapshot.json`，之后再次变化须以实时状态为准。没有活跃抓取、自动推理或保持宿主。瓶子往返的三个里程碑仍成立；网球抓起为 true、支撑松爪放置为 false。
+
+
+### 2026-10-01：叠杯系列收尾（5 次）
+
+用户最终结束本任务：第 1、2、3、5 次成功，第 4 次失败，共 4/5（80%）；取消第 6 次。完整 prompt、逐轮时间、异常及统计见 [叠杯实验记录](CUP_STACKING_EXPERIMENT_RECORD_20261001.md)，机器汇总见 `analysis/cups_trials_20261001/series.json`。完整双臂回位监督流程仅第 3 次通过；第 5 次叠杯、释放及撤离已核验，最终回位未完成。
+
+第五次预算续段反复重锚非工作左臂，初始位偏差累计到 2.557°，触发原有 2.5° 门禁。随后临时续接宿主输入循环 `line` 未赋值异常退出，清理撤销两臂使能；不是网络故障。临时续接模式已撤回，异常与代码尝试保存在 `analysis/cups_trial05_20261001/return_host_fault/`。保留修正 `renew_sequential_segment`：顺序模式仅续当前工作臂的预算，保留非工作臂目标；最终相关检查 27 passed、25 subtests passed，尚无修正后的新实机试验。
+
+用户收尾后的实时状态：两侧 ready、disabled、stationary、owner=null，无 SDK 错误；无存活的保持审核宿主。只做过恢复参考的只读预览，未执行恢复使能或回位。用户已整理桌面，后续任务必须重新检查现场，不能自动接着叠杯或把当前姿态冒充第五次受控复位结果。
+
+
+### 2026-10-01：任务 02 两脚充电器插入插线板（准备，5 次）
+
+操作者要求左臂 can0 抓取两脚手机充电器，插入三插位插线板正中间两孔位，计划 5 次；右臂 can1 拟从远离插入区的外壳端部固定，须确认整臂与相机间隙。一次仅一侧动作：右先固定，左抓取/插入/松爪/撤离/回位，右最后释放和回位。用户特别强调两臂不得干涉。
+
+当前仅完成只读状态、三图和记录准备，0/5，未发送使能或动作，插线板是否已从市电拔除仍待用户确认。两臂最近均 ready、disabled、静止、owner=null，无 SDK 错误。不能从图片中的电线盘或插头推断断电确认已完成。现有叠杯专用阶段门禁不可直接用于此任务；右臂固定方式、插入和双臂完整路径未实机验证，没有新增自动防碰撞或接触力控制。
+
+完整 prompt、每轮时间与结果模板：[任务 02 实验记录](CHARGER_INSERTION_EXPERIMENT_RECORD_20261001.md)；输入 `r5_charger_insertion_20261001_context.json`；汇总与准备证据 `analysis/charger_insertion_trials_20261001/`。不得把准备耗时计作首轮运行时间或填造结果。
+
+
+### 2026-10-01：任务 02 第 1 次进行中，等待右爪接触核验
+
+用户已确认断开市电、摆好并移开手。任务 02 共 5 次；第 1 次从 21:03:44.979 首次使能保持计时，包含同轮终端输入修复；交互宿主 review4 于 21:05:41.685 准备，21:06:52.528 首次动作请求。控制入口 `tools/start_idle_review.py --working-arm right --output analysis/charger_trial01_20261001/review4 --paired-client dual-policy-6d553a61f3714f0cba3af591890c24a9`；已运行，禁止另起控制宿主。
+
+当前右爪接近插线板外端，接触点被指尖挡住，等待用户从侧面确认是否轻贴且稳定；未宣称抵稳，左臂未开始抓充电器。两臂健康静止保持。右臂当前工作，左臂初始位。若需继续必须先新 observe 并重新看图，不要直接按旧坐标重放。已询问用户，不要自动继续顶压。采用 select-left/right 明确切换工作臂，续段只更新工作臂；阶段成功与间隙由监督审核，非自动碰撞检测。
+
+速度仍为原末端 0.01 m/s、0.05 rad/s、关节 9°/s，全部保护不变。新增 review_telemetry.py 的合并观察包、单条命令输入等待与处理耗时；审核主循环、单臂门禁等相关离线检查 61 passed、40 subtests passed。新文件启动器只读预热并 exec 主宿主，解决冷启动帧等待和 heredoc 标准输入问题；旧准备目录 review/review2/review3 及恢复经过保留。工作区新增/修改源码为 review_telemetry.py、tools/held_policy_review.py、r5_sequential_trial.py、tools/start_idle_review.py 及相应 tests。完整状态与运行限制见 [任务 02 记录](CHARGER_INSERTION_EXPERIMENT_RECORD_20261001.md)。
+
+
+## 2026-10-01 任务02协议改为仅左臂（覆盖之前状态）
+第1次右臂2 mm侧向微调到位检查超时，宿主清理使两臂失能，右臂回落；未抓取或插入，计失败。不是已证实的网络故障。用户取消右臂固定方案，明确只由左臂插入中间两孔，右臂全程不发执行命令、不复位。现场确认断电和移开手；新图右臂已折叠失能静止。第2次由现有single_policy_review.py --arm left运行，终端84584，证据analysis/charger_trial02_20261001/review；当前初始空爪接近阶段。不要另起宿主。完整prompt、版本与5次统计见CHARGER_INSERTION_EXPERIMENT_RECORD_20261001.md；保留现有保护和速度，无接触力验证，插线板移动即停止推进。
+
+21:39 第2次检查点：single_policy_review终端84584仍保持左臂，右臂始终失能、无owner。左臂已接近充电头、闭爪到0.43并10 mm试提，图像未证实离开黑色底座。已向用户发侧视问题，等待回复；禁止直接运输、加紧或插入。保持TCP命令约[0.360164,-0.025617,0.131758,-0.047708,0.784838,-0.016438,0.617643]，不是新动作授权或新鲜观测。证据grasp_review_wait.json和review/events.jsonl；恢复必须先observe看新图，预算续段只针对左臂。本轮未结束，不能计成功。
+
+2026-10-01T21:56:31.171328+08:00：用户侧视确认左爪已夹住白色外壳，但充电头仍在黑色底座。这里只observe检查（终端84584），未发新的执行动作。已询问黑色底座只是托住还是插脚插在里面，回复前保持，不继续上拉或加紧。右臂继续禁动；试次2仍进行中、未验证抓起。
+
+2026-10-01T22:06:56.421926+08:00：任务02试次2已局部抓取重试2次，仍未证实抓起。用户已澄清底座只是托着可向上取出，之后纠正当前根本未抓住。现有single_policy_review终端84584仍活动保持；当前左TCP命令[0.391209,-0.032080,0.130793,-0.050413,0.798966,-0.009674,0.599181]，开度0.43；实测关节FK z约0.121685。右臂失能禁动。已问夹指具体偏差：后方/偏高/开口太大，待回复；不要盲目继续提升或闭爪、不要新起宿主。详见grasp_retry_review.json与任务记录最新小节；从observe新图开始恢复。
+
+2026-10-01T22:13:08.334725+08:00：第2次已于22:09:06保持保护中断归档失败（40分15.779秒含人工等待），共2次失败，未插入。用户重新将充电头垫到倒置红纸杯上并授权重跑，第3次v3已启动左臂单臂宿主，终端33403，证据analysis/charger_trial03_20261001/review，原终端84584已退出。右臂禁动，接近抓取阶段。请先新图+状态，禁止启动第二个宿主。
+
+2026-10-01T22:32:29+08:00：任务02第3次曾在22:20:16核验抓起，随后空中调姿、运输到插线板附近。22:31:57至22:32:15图像之间充电头在夹爪内转动，腕图出现USB端面，原插脚朝向不能再用。终端33403的唯一single_policy_review左臂宿主仍保持，开度0.30，TCP命令[0.34850036,-0.21865938,0.18232557,0.03758449,-0.96179136,-0.01880471,-0.27053867]。右臂禁动失能。已问操作者只侧视确认是否下滑/转动及金属插脚朝下/侧/上，等待答复；不继续旋转、接近、闭爪或插入，不另开宿主。历史抓起true、当前抓持稳定性未确认、尚无插入。详见orientation_slip_review.json与任务02实验记录。
+
+2026-10-01T22:39:10.472232+08:00：操作者澄清先前充电头转动为人工调姿，原因是初始摆放角度；确认插脚现朝下、手和工具全部移开。不要再称为证实的自行滑脱。第3次保持调整后的姿态/0.30开度，左-Y30、+X20、-Y20 mm后物体稳定随动；当前TCP命令[0.3685089466047812, -0.26866707660426203, 0.18233025593565438, 0.03755692012895588, -0.9617770773077661, -0.01876018445827041, -0.27059635399400755]。唯一左臂宿主终端33403继续保持，右臂失能禁动。插脚遮挡，对孔/间隙未核验，已问侧视前后偏差及距板面几厘米，等答复前不下降。见preinsertion_alignment_review.json。用户另要求下一轮用黑色容器、插脚初始朝下，已写series.next_trial_setup，未启动下一轮。
+
+2026-10-01T22:48:08.073816+08:00：最新侧视澄清为向全局相机移近，4–5 cm为竖直间隙；先前退向机械臂的猜测未执行。左+X10 mm已执行，保持角度/0.30夹爪；随后一次-Z10 mm指令，FK实际约下降2.56 mm，无SDK错误，未继续累加下降。当前TCP命令[0.3785121441632614, -0.2686693543635531, 0.1723320423963786, 0.037553326248420435, -0.9617713595029709, -0.018745552133817837, -0.270618188602846]。已问两插脚是否均对中孔且未接触，待侧视回复。右臂失能禁动，唯一宿主33403仍健康保持。重启/松爪/下降均不可自动进行，先新observe和侧视核验。
+
+2026-10-01T22:51:30.850876+08:00：操作者确认中间孔已对准仅差竖直间隙。新图见插线板/线缆位置改变（来源未明确，无手），按当前对准确认执行三次仅-Z小步。FK总下降14.315 mm（6.514、5.002、2.799），最后进展变小，已停止下降、等待侧视“悬空/进入/抵住未入”与剩余毫米。TCP命令[0.37850546989194894, -0.2686635511875121, 0.1540188965912681, 0.037572740042116755, -0.9617825845831107, -0.018779548529930537, -0.27057323917078535]，实测z=0.1612202687785822，开度0.30。宿主33403健康保持，右臂失能禁动。不得靠继续累加下降克服阻力，不松爪或宣称插入；见vertical_approach_review.json。
+
+2026-10-01T22:53:18.193135+08:00：操作者明确接触孔口/板面但未插入。已停止下压并仅竖直退离一次，目标为最新实测z+5 mm，FK实际上移1.497 mm；分离未确认。当前TCP命令[0.3785063611130971, -0.2686643366050594, 0.1650469277203975, 0.03756978732630571, -0.9617811017439153, -0.01877503872348431, -0.27057923299737635]，实测z=0.16154389350774664，夹爪0.30。终端33403健康保持，右臂失能禁动。已问侧视插脚是否离孔、板是否平放、若分离偏孔哪边；答复前不横移/旋转/继续下压/松爪。记录contact_withdrawal_review.json。
+
+2026-10-01T22:56:45.028032+08:00：用户侧视确认插脚已离孔、插线板平放，之后仅observe（1790866520441560085），无新动作。终端33403保持原TCP/0.30，右臂禁动。已问金属脚是否各自对开口且长边平行长孔，待答复以区分偏孔边/角度与受阻；当前status waiting_pin_slot_geometry_review。不自动重复下压。
+
+2026-10-01T22:58:32.814842+08:00：用户确认两脚对孔且方向一致，但前次接触未插入；停止本次插入尝试，不再累加下压。已在用户确认分离后竖直撤开，FK上升15.821 mm；当前TCP命令[0.37850726450109673, -0.26866512785157615, 0.18164034951048316, 0.03756688976803052, -0.9617795934869334, -0.018770471755096406, -0.27058531322922336]，实测z=0.1774613459297228，夹爪0.30持物。唯一宿主33403仍健康保持，右臂禁动失能。状态insertion_attempt_stopped_holding，尝试结果contact_without_insertion；整轮未结束、未松爪/回位/交接，系列仍2次完成。后续先处理持物保持和插入阻力，不自动下压、不杀宿主或失能。下一轮黑色容器/插脚朝下偏好仍有效。见insertion_attempt_stop.json及MD最新小节。
+
+2026-10-01T23:10:01.974841+08:00：最新用户要求先左臂复位，然后横放充电头重新启动。已抬高并+Y运输往黑容器准备放稳，尚未放下/松爪/回位。唯一宿主33403、PID452334，当前TCP命令[0.3760971420,-0.1070389072,0.2256334875,0.0464473577,-0.9656288779,-0.0222596917,-0.2547705227]，开度0.30。23:08:08运动后物体相对手爪由USB面转到标签/插脚面，23:08:56稳定但原因不明；已问是否用户手动调整、仍夹稳且手已移开，待回复前不继续运输。右臂禁动。初始左关节目标优先使用initial_state.json raw_state.command_deg=[1.6064604928,-0.8196227004,0.7321962790,-11.1142477420,-1.3223246233,-3.2894737458]，实测初始也保存在同文件；复位后再比较2.5度范围。不得杀宿主/带物盲目折回/空中松爪。
+
+2026-10-01T23:23:24.184327+08:00：用户确认第二次夹内转向为人工调整，随后确认黑容器已托住并授权松爪。单臂宿主33403执行open-supported已张爪，充电器独立留在容器，左臂空爪上撤35mm并按初始关节FK端点逐段复位，已完成16段，尚未到初始。最新图1790868154509716413见用户再次摆放容器，已暂停运动并询问移开手，等待答复。唯一宿主PID452334仍健康保持，右臂始终禁动。下一轮明确改横向摆放、全局相机最右侧第一插口，协议v4尚未启动；不要沿用中孔目标。
+
+2026-10-01T23:27:11.089014+08:00：第3次左臂空爪受控回位通过并结束，完成3次均未插入。第4次已按用户授权启动v4（黑容器、横向外壳、全局相机最右侧第一插位），右臂仍禁动。唯一左臂宿主PID1668104、终端49337、analysis/charger_trial04_20261001/review；旧33403已退出。恢复先observe看新图，禁止另开宿主。
+
+2026-10-01T23:33:45.405044+08:00：第4次相机采集线程永久锁存Camera sequence did not advance or device changed；后续55mm前伸未执行。PID1668104/终端49337仍使能静止保持、硬件正常、右臂失能禁动。最新有效TCP[0.2641238608806236, 0.009219064839155956, 0.2175693779597862, -0.05622234470216736, 0.9322924164262316, 0.01296414735584625, 0.35707398268939233]、开度约0.9993，空爪；尚未抓取或插入。只读三图现已恢复递增，但旧线程不能重启，observe继续拒绝。不要停宿主导致下垂、不要修改日志伪造observation、不要绕过handoff前置条件。已问用户设备既有的可靠机械支撑人工接管流程，等待说明。series仍完成3/5，第4次未结束。
+
+2026-10-01T23:40:42.196580+08:00：用户说“有支撑”，只读图1790869193163568765显示手扶左臂，尚未核实独立机械支撑。左臂仍ready/使能/holding、右臂失能，未发送失能或运动；已询问支架/托架还是手扶及承托位置。终端49337、PID1668104继续保持，不能把“有支撑”当作已受支撑交接完成。
+
+2026-10-01T23:41:21.977573+08:00：用户明确确认目前只是手扶，未有独立机械支撑。未执行失能、停止宿主、重启或运动，维持原使能静止保持；要求手离开运动/夹点区域，待按设备既有流程完成可靠机械支撑或由设备人员接管。第4次仍相机锁存暂停，未结束、未增加成功/失败次数。
+
+2026-10-01T23:42:32.619944+08:00：用户要求“直接停止”，同时确认仅手扶。任务推进已停止，不能自动恢复第4次；未撤销使能、未终止唯一保持宿主，因其退出会导致失能下垂且独立支撑未建立。左臂静止保持、右臂失能。待受支撑的设备现场接管，整轮收尾尚未完成。
+
+2026-10-01T23:52:59.297518+08:00：用户重新授权启动后，第5次已建立左臂保持，唯一宿主PID1918765/终端37680，analysis/charger_trial05_20261001/review。旧第4次宿主已于23:45:52.920因使能/owner丢失退出，后续只读确认两臂失能折叠，第4次归档失败；外部接管过程未记录，不冒充受控复位。第5次v4仍黑容器横向外壳、全局相机最右插位，右臂禁动，恢复先observe，不要另起宿主。
+
+2026-10-02T00:09:34.990145+08:00：第5次已在00:00:49核验抓起，当前左臂夹持稳定并到全局最右插位附近，尚未接触/插入/松爪。PID1918765、终端37680唯一宿主继续健康保持，开度0.56；右臂失能静止禁动。最新TCP命令[0.3838040183504984, -0.22744787071376127, 0.2520786061508782, 0.059708605959565675, -0.9675322133586668, -0.017954337681896533, -0.24493660454503105]。固定高位继续横移预检被原IK拒绝；降低15mm接近高度后分步运输通过原检查，未改约束。操作者仅确认仍有很大悬空余量；当前已问两脚分别对孔、片向是否一致及剩余厘米，等待答复前不再下降。恢复先observe新图；不得开第二宿主、空中松爪或终止保持宿主。第5次仍进行中，完成4/5均失败，勿将第5次提前判定。见preinsertion_alignment_checkpoint.json与任务02记录末节。
+
+2026-10-02T00:12:35.210328+08:00：第5次操作者要求远离全局相机调整，估计竖直间隙7–8 cm。已新图预检并执行名义-X10 mm（FK前后实际约4.25 mm），保持原高度目标/角度/开度0.56；当前TCP命令[0.3738029596025444, -0.22744713092778018, 0.2520780972412143, 0.059710963528708354, -0.9675337344324847, -0.017958949302934096, -0.24492968319405073]。PID1918765/终端37680仍唯一健康保持，右臂失能禁动。尚未接触，插脚/孔口遮挡，已问调整后两脚是否对孔且片向一致、剩余偏差厘米；回复前不再下降。先observe恢复新图，不重启、不空中松爪、不终止宿主。见away_camera_alignment_correction.json。
+
+2026-10-02T00:18:43.724375+08:00：任务02第5次暂停新运动：用户要求继续远离全局相机2cm，但新图右臂姿态较00:12:35明显改变，用户否认人工调整。右臂仍失能/无owner/静止，无SDK错误，3秒只读采样稳定；原因未明，肘/相机投影重叠，已问侧视明确空隙/手已移开，待答复。仅-X20mm check_path预检通过，尚未执行；没有新的夹爪或关节动作。左臂唯一宿主PID1918765/PTY37680仍健康夹持保持，TCP命令不变[0.3738029596,-0.2274471309,0.2520780972,0.0597109635,-0.9675337344,-0.0179589493,-0.2449296832]、开度0.56。禁止终止宿主/空中松爪/启用右臂或另开控制器；先新图、核验真实间隙再恢复。第5次仍进行中。详见unexplained_right_pose_change。
+
+2026-10-02T00:20:25.142334+08:00：用户明确确认两臂/相机有空隙且手已移开；新图复查后已执行名义-X20mm远离全局相机，FK实际-18.52mm，夹持稳定、无接触。当前TCP命令[0.353798477231082, -0.22744420781131067, 0.25207592795823647, 0.05971655601537507, -0.9675404923434879, -0.017978226707725718, -0.24490020820291075]，开度0.56，预算travel92.879/120、提案5。已问两脚是否分别对准最右插位且片向一致、只差高度，待侧视回复，不先下降。右臂仍失能禁动，姿态变化原因未明；J5现约38.916°，须持续看图留意。唯一宿主1918765/37680保持，勿新起/杀进程/空中松爪。见away_camera_20mm_correction.json。
+
+2026-10-02T00:22:23.365947+08:00：用户侧视确认两脚对最右两孔且方向一致，只差高度。左臂renew后-Z20、-Z15mm两段已执行，FK累计下降41.464mm、XY漂移约2.6/2.1mm，夹持稳定。当前TCP命令[0.35806189841177527, -0.22899503283800546, 0.20933407212087607, 0.05872570667309403, -0.96956181454469, -0.02207998228586902, -0.2366720379233882]；实际Z0.202628m，开度0.56。预算travel21.644/120、提案2；唯一PID1918765/终端37680健康保持，右禁动。当前问侧视“悬空剩多少毫米/已接触，是否仍对孔”，答复前不再下降，未核验插入。见vertical_approach_review.json。
+
+2026-10-02T00:36:38.752671+08:00：第5次按用户判定失败，已空爪22段受控回位，最大偏差0.962°，00:33:43.087结束2443.789秒，宿主37680已退出。原定5次完成0/5。用户要求重新开始，第6次补充尝试已启动：唯一PID2627558/PTY85170，目录analysis/charger_trial06_20261002/review；initial_state已保存。右臂继续失能禁动，目标仍全局最右两孔，charger USB朝上在黑容器。用户要求agent自己看图判断、不把常规审核变成用户接管；仍保留全部原保护。当前仅保持、尚未抓取，恢复先observe，不得启第二宿主。
+
+
+2026-10-02T00:54:26.551925+08:00：覆盖之前第6次进行中状态。第6次00:49:48.014关节限位保护失败，PID2627558/PTY85170已退出，两臂失能无owner，左爪空、充电器在桌面，未插入/未受控回位。抓起历史核验true，当前holding false。故障后最初J4~-79.199°，后续折叠静止J4~-10.502°，全过程未录制，不记成自动复位。右臂无执行命令。离线复现J4规划距2°边界仅0.0423°，须解决实际跟踪余量风险并检查实物后才可再试，勿直接重播/使能或绕过原保护。原5次0/5，补充第6次0/1，时间789.262秒。详细证据analysis/charger_trial06_20261002/limit_fault/review.json；MD及series已归档。
+
+
+2026-10-02T09:12:41.296218+08:00：用户继续授权第7次补充尝试，唯一左臂宿主PID2927579/PTY4369，analysis/charger_trial07_20261002/review；旧第6次已失败退出。--tracking-reserve-deg 3.5新增指令路径检查已测试；全部原保护不变。右臂失能禁动，最右插位目标。当前初始空爪保持，未抓起；恢复先observe并看新图，不得启动另一宿主。
+
+
+2026-10-02T09:36:06.450887+08:00：覆盖第7次启动状态。唯一左臂宿主PID2927579/PTY4369仍健康使能holding，右臂禁动失能。第7次已抓起和运输，插入未核验；监督者提前开始回托座运输，用户提出尚未插入后已暂停收尾。当前充电头仍夹持于黑托座上方，opening0.56，命令TCP[0.3834711893741568, 0.027486615854172138, 0.2522965328305318, 0.06536098160967287, -0.9729419427440174, -0.02089789287499226, -0.2206245593897085]。没有松爪、没有回初始位、没有结束试次，不能计失败或另起试次。状态holding_for_alignment_review。相机内外参为空/8cm TCP为估计、两脚和孔口遮挡，先解决可观察几何判断，不直接重播接近或盲压。恢复先observe新图；禁止kill/失能/悬空松爪/新起另一宿主。见alignment_review_checkpoint.json和实验MD末节。
+
+
+2026-10-02T09:45:09.555507+08:00：第7次已结束，覆盖此前持物保持状态。充电头受支撑释放后，左臂空爪19段回位，最大实测偏差1.486°/指令1.316°，09:44:47.692核验通过；09:45:09.556主动结束PID2927579/PTY4369，宿主已退出。两臂ready、失能静止无owner、无SDK错误；右臂未执行动作。插入未核验，本次按未成功归档1948.259秒。原5次0/5、补充2次0/2，series已关闭，不再自动重试插座。用户最新要求先完善MD，再只用左臂把笔插入笔筒；右臂继续禁动。场景已改：充电头被用户移走、插线板到桌边，黑托座出现笔。下任务尚未启动，先新图/状态和唯一宿主检查，不能复用已死会话4369。详见CHARGER_INSERTION_EXPERIMENT_RECORD_20261001.md最终汇总与trial07归档。
+
+
+2026-10-02T09:54:15.955289+08:00：任务03笔入笔筒用户明确先只测1次。唯一左臂宿主PID3619354/PTY97849已运行，analysis/pen_insertion_trial01_20261002/review；右臂失能禁动。当前初始空爪保持，未抓起。目标是黑方形托座露出的笔→中间黑圆筒顶部开口。保留额外3.5°规划余量和全部原保护。恢复用新observe看图，不启另一宿主；不得使用已死插座PTY4369。记录PEN_INSERTION_EXPERIMENT_RECORD_20261002.md，初始关节已保存。
+
+
+### 任务03辅助观察准备受阻，左臂继续保持
+
+2026-10-02T10:14:12.458728+08:00：覆盖上一启动宿主状态。用户明确右臂可观察并要求当前启用辅助观察。两次试提均未抓起笔，笔仍托座支撑，左爪已张开。原PID3619354/PTY97849无失能交接后退出；观察宿主PID3913989/PTY74129因右爪4.901197+.1超5在使能前拒绝并保留左臂，随后恢复交接，该宿主已退出。当前唯一PID3957383/PTY63727 tools/single_policy_review.py --arm left，目录analysis/pen_insertion_trial01_20261002/review_after_observer_precheck。左臂使能holding，右臂disabled/unowned未动作。等待用户略收拢右侧空爪并确认手工具移开，不能视等待为批准。原初始姿态和计时不变，1轮尚无结果。新的tools/held_policy_review.py支持--from-single-review-pid/--adopt-arm/--working-arm和--tracking-reserve-deg3.5；必须先新图/状态、右侧原使能范围通过再受支持交接，一次一臂。当前单臂宿主依然禁止右臂另行使能。修改备份在observer_host_change；35测试+40子测试通过。
+
+
+### 任务03右臂观察已启用，尚未核验抓起
+
+2026-10-02T10:25:48.435177+08:00：用户收拢右侧失能空爪并确认手工具移开后，范围检查通过。旧单臂PID3957383/PTY63727已无失能交接退出。当前唯一PID4003534/PTY49170 tools/held_policy_review.py，analysis/pen_insertion_trial01_20261002/observer_review02，双臂enabled holding，working_arm=left，原所有保护及3.5度额外余量。右臂完成4段观察移动，现在固定观察；不可用旧penStep/单臂PTY控制。dualPenStep/dualPenPacket为当前JS工具。三次局部试提均未核验独立抓取；最新.035开度、10mmZ试提托座略动，已恢复试提前Z.182703保持；笔仍托座支撑关系内，未松爪。等待用户仅说明原始笔是搭放还是一端插/卡在托座，不伸手。左臂原initial_state.json回位参考不变；右臂回位参考observer_manual_adjustment.json:state.right。仅1试次，不能填写成功或终止。
+
+
+2026-10-02T10:40:04.291080+08:00：任务03第1次已于10:30:06.429因settle保护失败结束，两个旧宿主均退出，保护失能回落不计复位。用户授权重启，补充第2次10:35:17.612开始；左臂单臂PID226508/PTY32364已无失能交接退出。当前唯一双臂宿主PID285249/PTY79442 tools/held_policy_review.py --from-single-review-pid226508，目录analysis/pen_insertion_trial02_20261002/review，working_arm=right，正在空爪抬高辅助观察；左臂折叠保持，未抓取。JS pen2Step/pen2Packet当前；全部旧helper/PTYS不可操作。用户确认笔仅搭放在方形托座，无固定；不可把左腕投影当作夹住。细动作前检视跟踪残差，健康保持时可用原renew重锚定，所有原保护和3.5度余量不变。初始双臂回位参考trial02/initial_state.json。本轮为授权的第2次，不自动追加。
+
+
+2026-10-02T10:58:01.229827+08:00：覆盖第2次接近状态。本轮3次局部抓取均未独立成功，第2次曾短暂随动后滑回托座，第3次闭爪/8mm试提带动托座，已回落受支撑松爪并空爪撤离。唯一PID285249/PTY79442健康双臂holding，working_arm=left，目录trial02/review。右臂观察固定，尚未回位。1790909791422029500附近新图见用户手进入并把细笔换粗记号笔、调整容器；已暂停下一回位，异步问手工具是否全部移开，必须等确认。pen2Step/pen2Packet当前；pen2ReturnPreview/pen2ReturnStep可按每段新图审核执行空爪回位，预览使用初始实测参考、J2规划终点-.20保持2.5度原回位容差，不改变保存参考。不得结束保持宿主或失能，未结束本轮计时、未自动追加试次。
+
+
+2026-10-02T11:27:18.777862+08:00：覆盖此前等待/第2轮状态。旧细笔第2轮于10:58:24.983因用户换道具未成功结束；当前总序号3、v3粗记号笔入宽口黑杯第1轮，仍使用唯一健康宿主PID285249/PTY79442，原始日志仍trial02/review，分界1790909904.9832134，严禁另启/kill/失能。新状态trial03/status.json，回位参考继承trial02/initial_state.json并复制为trial03/return_reference.json。黑托座局部抓取未脱离后松爪；用户改红白纸杯，0.13开度抓起，11:14:19多图独立核验脱离并运输到中间黑杯上方。右臂先回位0.721度，随后为杯口侧视又调整到低位观察，故最终回位标志仍false。当前working_arm=right，双臂enabled holding，左仍夹笔在杯口附近、未释放/放置核验。命令123仅动右臂完成后图见手进入且笔方向改变，已停止新动作，异步等待用户确认调整结束、笔稳、手工具清空；不得把等待当确认。JS pen3Step/pen3Packet为当前，pen3Plan仅离线左端点IK预览；pen3ReturnStep每次单段空爪回位用pen2ReturnPacket，并逐图复核。所有原保护及3.5度余量保留，3个过期观察提议和1个J2规划余量提议仅预检拒绝，未故障。记录PEN_INSERTION_EXPERIMENT_RECORD_20261002.md末节；恢复必须先核对新用户确认和新observe图。
+
+
+2026-10-02T11:51:38.998859+08:00：粗记号笔→宽口黑杯变体第1轮（总序号3）已完成人工辅助成功，11:38:49稳定放置核验、11:50:24两臂空爪回位通过，耗时3119.337秒。用户授权第2轮并复摆笔到纸杯、确认手工具移开；总序号4/变体第2轮从11:51:38.999开始，状态trial04/status.json，初始三图/冻结prompt已保存。唯一PID285249/PTY79442仍健康holding，原日志trial02/review，boundary1790913098.998859，working_arm=right准备辅助观察。尚未抓起/放置，不可计成功。回位reference继承trial03/return_reference。JS pen3Step(全三图)/pen3Packet仍同宿主有效；所有旧trial1/charger单臂PTYS已死。一次一臂，保留全部原限制与3.5度额外规划余量；不kill、不另起宿主。
+
+
+2026-10-02T12:16:34.320033+08:00：覆盖所有此前PID285249/PTY79442仍保持的状态。任务03总序号4/v3粗笔入宽口黑杯第2轮已于12:13:01.215失败中断，耗时1282.216秒。两次局部试提(10mm/.20、12mm/.18)均空抓，未运输。命令230重接近后，231 set_gripper恢复保持状态一致性检查抛R5ExecutionFault，闭爪目标尚未发送；双臂SDK保护失能，宿主已退出。只读状态ready、disabled、静止、无owner/错误，笔仍纸杯内，黑杯空；回落不计回位。严禁使用旧pen3Step/PTY79442或旧TCP继续动作，不自动重启、不绕过保护。根因未定，瞬时恢复前后样本未记录，没有网络原因证据。用户最新纠正“还得再往全局相机那个方向来一点”已保存未执行，新启动必须重新感知且先解决恢复一致性中断。trial04/status、events、resume_fault_diagnosis、host_exit_state/图、实验MD和series已归档。v3两轮1次人工辅助成功、1次失败；全自主0次，原细笔两轮另列。
+
+
+## 2026-10-02 13:05 任务03第5轮已结案
+
+粗记号笔宽杯第3轮（总序号5）成功，含用户扶笔/方向纠正，记人工辅助成功。13:05:07.196两臂回位复核完成，总用时42分25.634秒；笔独立留杯，双臂实测/命令均在保存起点2.5度容差内。当前无下一轮授权。
+
+唯一活动宿主PID2760395 / PTY69659，owner dual-policy-6d553a61f3714f0cba3af591890c24a9，目录analysis/pen_insertion_trial05_20261002/review。两臂使能、静止、健康保持，工作臂left；试次已结束但宿主未退出。下次先读新状态与图像，不复用旧观察ID。回位参考为该轮return_reference.json；历史PID285249已退出。详见PEN_INSERTION_EXPERIMENT_RECORD_20261002.md、该轮status.json及final_return_verification.json。
+
+本轮仅增强r5_policy_backend.py已有resume状态故障的样本日志，检查条件/阈值未改，61项测试和14项子测试通过。原速度、限位、owner、轨迹、跟踪、预算与图像新鲜度保护均保留。
+
+
+## 任务03下一轮已授权（总序号6 / v3第4轮）
+
+用户确认上一轮成功并要求继续。analysis/pen_insertion_trial06_20261002已创建，状态authorized_preparing_waiting_hands_clear，started_at仍null。最新画面已见笔回到桌面，杯为空；清场确认问题已发出，等待明确回复后再新图启动。本轮将继续使用PID2760395/PTY69659，日志仍在trial05/review；用新起止时间/命令索引分割，禁止另启竞争宿主。完整prompt及回位参考在trial06；上一轮已冻结证据。
+
+
+2026-10-02 13:20故障更新，覆盖此前PID2760395/PTY69659健康保持记录：trial06/v3第4轮因命令142空爪5mm横移settle检查失败终止，两臂随后disabled、stationary、owner null，旧PTY不可再用。13:15:00.603至13:20:04.096，共303.493秒，无闭爪/试提/放置，未主动回位。末反馈投影进度0.3943低于原0.4，最大残差0.523度；仅末样本重算，根因未定，未证实网络问题。trial06状态、事件和故障图已归档；v3已结束4轮2人工辅助成功2失败。用户明确再启动，准备trial07；故障后手在摆笔，异步清场确认待答。未启动新宿主，全部保护未放宽。
+
+
+## 2026-10-02 13:47 任务03总序号7状态更新
+
+唯一活动控制宿主PID128128 / PTY19315，目录`analysis/pen_insertion_trial07_20261002/review`，owner `dual-policy-6d553a61f3714f0cba3af591890c24a9`。原单臂PID118123已通过保持交接退役；PID2760395为上一失败轮的已退出宿主，禁止复用。两臂健康使能保持，选中左臂。总序号7 / v3第5轮已自主抓起并放笔入杯，右臂回位通过，左臂空爪回位中。使用本轮`return_reference.json`，不是前轮初始姿态。保留全部原保护；健康保持host不得直接结束。最终结果以本轮status和实验MD后续结案为准。
+
+
+## 2026-10-02 任务03总序号7已结案，用户授权第8轮
+
+第7轮/v3第5轮成功，13:27:35.661至13:50:48.270，23分12.608秒；轮内无人工辅助，双臂回位通过。完整prompt、可复用操作说明、统计与证据见`PEN_INSERTION_EXPERIMENT_RECORD_20261002.md`。5轮v3结果3成功2失败（含2辅助成功）。PID128128/PTY19315仍唯一健康保持，owner不变。13:51:15.834新图见笔已复摆，未再发动作。用户后续明确再测试1次，准备总序号8/v3第6轮，等待本次摆放结束/手工具移开确认并取新图；复用健康宿主，不能结束它。新一轮不覆盖trial07冻结证据。
+
+
+## 2026-10-02 14:26 任务03总序号8结案，现场已换场
+
+总序号8/v3第6轮成功：13:57:23.614至14:26:10.428，28分46.813秒。2次局部抓取（第一次空抓被核验识别，第二次成功）；抓取/放置无人工辅助，14:22:07.810稳定放置通过；两臂最终回位均在原2.5°内，保持使能静止。v3累计6轮4成功2失败（66.7%）；其中2次抓取/放置辅助成功、2次无该阶段辅助，严格整轮无介入口径仍1次。
+
+最后回位帧显示杯笔已被移走、桌面换成黑托座和白色充电头，推断放置后回位末段换场，未取得口头确认。检测后未再发动作，不自动启动插头或其他新任务。新的动作需要新任务授权和现场清场核验；无第9轮授权。PID128128/PTY19315仍唯一健康保持宿主，owner `dual-policy-6d553a61f3714f0cba3af591890c24a9`，不可另起竞争宿主或直接关闭保持。活动日志仍在trial07/review；trial08命令87–189已独立冻结，trial07冻结结果未改。完整prompt、阶段计时、空抓证据、放置/回位图片和可复用说明见`PEN_INSERTION_EXPERIMENT_RECORD_20261002.md`及`analysis/pen_insertion_trial08_20261002/`。
+
+
+## 2026-10-02 任务02第8次已授权，准备右臂辅助观察
+
+用户结束笔入杯测试并要求再试插头、启用右臂观察。本次只追加1轮，协议v6-left-insertion-right-observation，目标沿用全局最右侧靠开关组合插位的两孔。左臂抓取/插接，右臂只观察不固定，一次一臂，检查完整臂体和相机间隙；原速度及所有保护、3.5°额外规划余量保留。原5次0/5和补充2次0/2冻结不改，trial08正在准备，未计时/未动作。
+
+唯一健康宿主仍PID128128/PTY19315，owner dual-policy-6d553a61f3714f0cba3af591890c24a9，活动日志仍analysis/pen_insertion_trial07_20261002/review。命令190只读采图已看见新充电头/插线板摆放，两臂在起始位holding。正在异步等待本次“市电已拔除，摆放结束，手工具全部移开”的明确确认；收到后须新observe、保存初态并开始本轮计时，禁止等待时间代替确认。复用该宿主，不能向旧插座会话4369发送指令，也不要另启或kill。新状态/完整prompt/回位参考：analysis/charger_trial08_20261002/，context为r5_charger_insertion_20261002_observer_context.json，记录仍CHARGER_INSERTION_EXPERIMENT_RECORD_20261001.md。JS chg8Step/chg8Plan/chg8RightPlan/chg8FKPreview/chg8PosePlan/chg8ReturnPreview可用于当前宿主，但尚未发本轮动作。
+
+任务02第8次已获本次断电/清场明确确认，14:37:06.978启动，首动2026-10-02T14:37:23.396131+08:00。复用PID128128/PTY19315双臂宿主，右臂观察、左臂操作，当前接近抓取中。唯一活动状态analysis/charger_trial08_20261002/status.json；不启动新宿主。
+
+2026-10-02用户新增长期要求：每次任务首动前启动三路相机录像，收尾后停止并记录时间/丢帧，见THREE_CAMERA_RECORDING.md和tools/record_three_cameras.py。当前任务02第8次补录运行，PID2138379，目录analysis/charger_trial08_20261002/recording；创建其STOP文件结束，不能停止机械臂保持宿主。
+
+
+2026-10-02T16:02:45.991699+08:00：任务02第8次仍未结束。右臂已在cmd342/343/353退让，最后实机动作cmd361右腕外转15度；左臂仍夹持充电头，未插入/释放。cmd362后相机监督线程永久锁存sequence/device异常，363运动和364observe拒绝，不能再用chg8Step推进、不能用旧review_packet当新鲜观测。HTTP只读相机帧仍递增，不能清除/绕过锁存。PID128128/PTY19315保持两臂enabled/holding、同一owner且无硬件故障；不得kill/失能/重复使能或新起竞争宿主。trial08/status.json=paused_camera_fault_holding，检查点camera_gate_hold_1600/checkpoint.json；未结束计时、未判定结果、未启动第9次。独立三路录像PID2138379/PTY72079持续到recording目录（中途14:47:25启动，非全程），不要停控制宿主来停录像。用户最新询问录像位置，已告知。
+
+
+2026-10-02T16:10:27.679619+08:00：覆盖此前持续录像状态。用户要求停止当前三路录像，已创建trial08/recording/STOP，manifest=completed、recorder PID2138379已退出，末段可解码；总6.96 GB/83分02秒。唯一控制宿主PID128128/PTY19315未操作，仍相机锁存持物保持；不要把停止录像当作停止机械臂或试次结束。trial08 status仍paused_camera_fault_holding。
+
+
+第9次重启准备：用户确认第8次末尾断电，并授权重新连接、重新录制，且明确以后每次测试都在原analysis试次目录录三路。第8次16:11:02.678宿主退出，已归档未成功5635.700秒；无插入/释放/受控回位。第9次录像PID449733/PTY31805，analysis/charger_trial09_20261002/recording，16:15:01.682开始；原PID128128和录像2138379均已退出，禁止使用旧helper会话。通过原HTTP disconnect/connect(acknowledge_initialization=True)尝试左臂重连一次，仍CAN feedback timeout、关节为null，未启动新监督宿主、未使能。右臂ready/disabled/unowned。只读CAN诊断保存preflight/passive_can_check.json；在左臂真实反馈恢复且原保护通过前不得重复使能或开始抓取。当前等待确认左臂供电/连接状态，录像持续。
+
+
+2026-10-02T16:56:52.326227+08:00：第9次仍未抓取。用户已确认左臂电源/急停/线缆；第二次左SDK重连仍RX=0/null，随后已通过disconnect退出左worker。当前无控制宿主、双臂失能无owner，右SDK健康。tools/rebuild_left_can_bridge.py已创建并--check通过；固定左序列号、精确旧桥argv、pidfd和双方失能检查，仅重建左桥后调用原restore_can.sh，SDK保持断开。sudo -n需交互认证，等待用户本机执行sudo python3 /home/tuojing/arx_r5_control/tools/rebuild_left_can_bridge.py。完成后先查桥/新图，再逐臂原SDK初始化与反馈核验，不能复用旧PTY。录像PID449733/PTY31805持续保存trial09/recording。
+
+
+2026-10-02T17:10:59.790211+08:00：覆盖此前等待CAN恢复状态。任务02第9次已恢复并运行；唯一双臂宿主PID633536/PTY16079，日志analysis/charger_trial09_20261002/review，owner dual-policy-6d553a61f3714f0cba3af591890c24a9。单臂PID622543已交接退役，旧PID128128已死，禁止复用。双臂健康holding；右臂观察位就绪，左臂尚未抓取。回位参考为trial09/return_reference.json。本轮SDK恢复17:00:14，正式保持准备17:00:31；16:16开始的准备含等待，单列。录像PID449733/PTY31805仍持续，目录trial09/recording，16:15:01开始，按用户要求每轮都录三路并在原实验MD记结果。使用chg9Step/chg9Packet/chg9FKPreview等当前helpers，观察30秒，全部保护保留。尚未插入，不能提前回收或计成功；不要结束健康保持宿主。
+
+
+2026-10-02T17:16:58.413254+08:00：trial09当前暂停等待手工具清空明确确认（已发异步问题）。cmd24接近碰倾充电头，cmd25空爪竖直20mm上撤；事后录像top_0059抽帧看见两命令之间手动扶正，见trial09/contact_review/contact_sequence.jpg。未闭爪/未抓起/未插入；禁止未获本次确认就继续。宿主633536/PTY16079健康保持，选中left，右观察；录像449733继续。MD/status/series已同步人工介入与暂停。
+
+
+2026-10-02 17:33更新：第9次17:26:30.844右臂cmd52 settle故障结束，双臂失能，旧PID633536/PTY16079死亡；chg9Step禁止再用。第9次录像449733/PTY31805已17:28:24结束，全部统计/视频/失败与人工收尾已写原MD。用户新授权第10次，清场明确确认已收到。新目录analysis/charger_trial10_20261002，录像PID1411667/PTY78034正在运行，三路帧增长；两臂ready/disabled/unowned，初态和新回位参考已保存。待新鲜三图审核后启动唯一监督宿主；不要复用旧宿主/旧回位参考。右臂始终只观察；换臂后健康静止renew重锚、重新规划以避免微小次关节与旧残差方向冲突，不改原0.3度死区和其他保护。
+
+
+第10次清场复核：用户确认手工具已移开，但initial_left和prestart_left画面左边缘仍有前臂靠桌，已再发针对前臂的问题等待确认；尚未使能、无宿主，录像PID1411667/PTY78034正常进行。不要把录像启动当作实机动作已启动。当前只是准备，started_at仍null。
+
+
+第10次最新：两臂已使能保持，唯一宿主PID1439743/PTY60756，from-single1428279已交接退役；日志trial10/review，owner不变。chg10Step/Packet/Plan/RightPlan/PosePlan/Orient/FKPreview/ReturnPreview已存，chg9全部禁止。cmd1仅observe，还未发任务运动。启动期间17:36:30–40录像见再次手动移动黑托座并扶充电头，已暂停新动作、异步等本次调整结束/双手工具清空确认；不要用之前确认代替。当前trial10/status=paused_waiting_setup_clearance，录像1411667/PTY78034持续，目录trial10/recording，17:32:05开始。回位参考trial10/return_reference（使能前状态），禁止替换为保持后姿态。
+
+
+第10次继续：用户明确回复“已结束，双手和工具已全部移开，继续抓取”，17:39:07记录清场确认。右臂随后到辅助观察位，17:44左空爪开始分段展开接近；尚未夹取、插入或回位。唯一宿主1439743/PTY60756保持，两臂健康；录像1411667/PTY78034三路持续。人工摆放调整保留在本轮记录中。
+
+
+2026-10-02 18:00最新：trial10已抓起充电头（局部重夹1次），cmd60后持物在黑托座上方。cmd61调角未执行，相机sequence故障锁存；cmd62选右和63renew也未执行，working_arm仍left。当前paused_camera_fault_holding，唯一宿主1439743/PTY60756保持、两臂healthy enabled stationary，不能杀进程或绕过故障。chg10Packet是18:00:05最后有效宿主观察，不是当前图；之后只读新鲜图在trial10/camera_hold。没有受支持的在线相机恢复或此阶段双臂交接。未运输/插入/释放/回位，ended_at null，原MD/status/series已同步。录像1411667/PTY78034持续，未停止，不能自行新建trial11。下一步只读诊断或设备既有安全恢复，禁止盲用旧helper继续目标。
+
+
+21:32恢复核查：两臂仍健康使能静止保持，新三图未见手进入，充电头仍在左爪。核查全部已有review/handoff入口，当前持物双臂相机锁存阶段无适用的在线恢复或交接入口；未发运动、未退出宿主、未改保护或日志。录像1411667仍在原trial10/recording持续，截至21:32约4小时、19.35GB。已向用户说明录像尚未终止。
+
+
+21:34用户要求停止并删除本轮无用持续录像，随后要求重新执行。录像1411667已正常结束于2026-10-02T21:34:14.427041+08:00并退出；仅删除trial10/recording目录（19.52GB），逐步照片、事件、暂停诊断和MD保留。删除与原录像起止统计见trial10/recording_stop_deletion_summary.json。用户已授权新尝试，但当前1439743/60756持物保持和相机锁存尚未解除，未发复位/失能/重启动作，新试次尚未开始。
+
+
+2026-10-02 插花任务切换：用户报告已人工复位并授权任务04第1轮，左臂插花到花左侧透明瓶，右臂仅辅助观察，三路录像与MD记录。用户确认摆好可启动、左电源开启CAN插牢。两臂disabled/unowned，旧review宿主已不在；左SDK motor fault、角度为空RX停滞，右ready。尚未任务使能，禁止复用旧插座坐标或未验证恢复模块。新状态analysis/flower_trial01_20261002/status.json；记录FLOWER_INSERTION_EXPERIMENT_RECORD_20261002.md。原插座人工复位不能计受控回位。
+
+
+### 2026-10-02T21:59:40.130989+08:00 准备受阻，尚未开始正式插花
+
+用户确认花可直接向上提起。首次录像目录recording启动超时，保留失败manifest；recording02于21:57:48.770正常启动，三路新鲜帧持续增长。左臂旧故障worker经正常disconnect关闭后，按原connect入口仅尝试一次SDK初始化，仍报CAN feedback timeout or invalid age，rx_count=0、六个关节角为空。can0累计RX固定24306023，而TX增长；同次can1 RX持续增长，故障集中于左侧通信，具体硬件原因尚未确定。两只适配器身份将另行核对。
+
+未启动插花保持宿主，未发抓花或右臂观察目标，正式started_at仍null，不计为已完成测试或成功率样本。左故障worker已正常退出，两臂失能且无owner；等待左侧通信恢复，不重复初始化。已请求正常停止准备录像并保留，避免无动作期间持续录制。成功恢复后，重新获取现场确认和三路新图，另段录像覆盖后续操作。证据left_reconnect_checks.json、left_reconnect_state.json、left_disconnected.json和recording02。
+
+
+准备录像已正常结束：21:57:48.770–21:59:40.469，共111.698秒；三路各1115帧，各缺失2帧，top/left/right重复分别1/4/6帧，HTTP请求错误均0。视频和manifest保留于recording02。左右CAN USB适配器稳定序列号均匹配（左208833765931、右2088335E5931）；USB在线不等于左臂电机通信正常。等待现场排查左臂本体到CAN适配器的通信链路。
+
+
+2026-10-02T22:12:34.166284+08:00 插花第1轮仍未正式开始：用户确认重新上电和检查两端CAN后，2026-10-02T22:10:34.638828+08:00正常connect仍无反馈（rx_count=0、关节空、CAN反馈超时）。左故障worker已正常disconnect退出，两臂disabled/unowned，右ready，无控制宿主。录像05已结束并保留（22:09:38–22:11:58，140.412秒，160236877字节），当前无录像；03/04启动超时manifest也保留。详见FLOWER_INSERTION_EXPERIMENT_RECORD_20261002.md及trial01/preflight/reconnect_after_user_check/summary.json。恢复真实反馈前不可启动任务，不重复盲目初始化，不复用旧插座宿主或未验证恢复模块。
+
+
+插花第1轮已结束失败：2026-10-02T22:23:27.601918+08:00开始，2026-10-02T22:37:42.057327+08:00本机控制接口urlopen timeout导致唯一held_policy_review宿主退出、双臂保护失能回落。没有闭爪/抓起/插瓶。原PTY96089与single9873已不可用，flowerStep等旧helper禁止再发命令；flowerHostTerminated=True。左J4约78.46超上限73.91，不能直接使能/绕限回位。正式MP4 recording08_mp4录制进程1289649也已消失，终端143、最后manifest仍recording，不可相信为在录；故障前后视频完整保存在0014，0000–0016每路可解码，末0017三文件未封装。最新status和MD已更新，证据fault_review。需按设备流程恢复姿态，并诊断HTTP超时，未启动下一轮。
+
+
+2026-10-02T22:49:11.522532+08:00插花用户改夹红色花头（协议v2），红头夹持、花杆入左侧透明瓶、右仅辅助观察、三路MP4与MD继续。22:46只读检查两臂已折叠ready/disabled/unowned，左J4=-11.42度，先前越界已消失；外部复位不计受控回位。无活跃宿主/录像，超时根因未修复，已询问这次复位摆放后手工具清空，答复前不使能。v2 prompt与状态在trial01/protocol_amendments，不复用死PTY96089。
+
+
+插花第2轮：single1821353已正常交接给dual1831924/PTY71298，但首个任务动作前host_terminated：Independent policy heartbeat stalled，check_age_s=0.308294>0.3，backend_busy=False。两臂已保护失能、近折叠初态、ready/无owner/反馈新鲜。flower2Step在发renew之前已检测到宿主死亡并未写入，request=0。禁止复用该会话或无诊断重复使能；无保护修改。MP4 recorder1793659仍在trial02/recording持续。完整记录在FLOWER_INSERTION_EXPERIMENT_RECORD_20261002.md和trial02/status/fault_review。
+
+
+2026-10-02 23:15用户要求重新录制：recording02已正常完成（23:13:20.698–23:15:32.963，共132.265秒），三路首段和末段首末帧均可解码，原文件保留。新全局/左腕/右腕MP4于23:15:33.875在recording03启动，PID1987308；首99帧/路全部新鲜、无缺失、HTTP错误0。左臂单宿主已交接退役，双臂review宿主继续静止保持，仍未发送任务运动。观察发现花由倾斜变直立，已请求这次摆放调整结束及手工具清空确认；未收到前不发运动。原心跳阈值和停机保护未变，未宣称间歇性故障已修复。
+
+
+2026-10-02 23:44最新：插花第3轮已失败结束，23:42:57空爪张开最后4.788014→4.8一步未满足50%进度要求而超时，尽管实测4.692已满足绝对到位容差。review PTY37709退出、双臂失能回落近折叠，非受控回位；花倾斜仍在杯支撑，两次局部抓取均未核验成功，未插瓶。本次诊断无心跳故障证据，未部署开爪判定修复或重新使能。用户终止三路录像：recording03在23:44:37正常STOP完成，90个MP4首末帧全部可解码，共约29分4秒；recorder1987308/PTY44411已退出。当前无活跃控制宿主/三路录像；不得复用死会话或旧next_command.json。完整证据analysis/flower_trial03_20261002/fault_review、status.json和FLOWER_INSERTION_EXPERIMENT_RECORD_20261002.md。后续需先离线修正末段进度判定，再复核现场和任务启动条件，不自动新开第4轮。
+
+
+2026-10-02T23:56:26.284920+08:00 插花trial03开爪误判已完成离线修复：supervised_policy.py仅对短末段合并前一个已完成步骤检查进度，绝对到位/稳定/提交/健康检查、步长与超时不变。原始反馈回放旧版超时、新版进入holding；125 tests和32 subtests通过。tests/test_opening_tail_progress.py及trial03/fault_review/opening_tail_fix/保存证据。未上机验证、未发送硬件命令、未启动录像；trial03失败结果不变。异常退出时的失能停机路径尚未更改，保姿故障处理未验证，不可称所有回落问题已解决。
+
+
+2026-10-03T09:01:05.563827+08:00 用户明确授权重新上电后的插花第4轮，已确认摆好并清场。新目录analysis/flower_trial04_20261003，MD为FLOWER_INSERTION_EXPERIMENT_RECORD_20261003.md；原三轮不覆盖。旧worker故障锁存/关节空，均disabled无owner，先录像并原接口重新连接，尚未任务使能，started_at为空。
+
+
+2026-10-03 09:06最新：插花第4轮仍在准备阶段，started_at为空。用户报告重上电并确认清场后，两臂各正常disconnect/connect一次；右恢复ready/disabled，新鲜完整反馈；左CAN rx_count=0/六角为空，can0内核RX固定7398559、TX增长，USB/接口稳定序列号匹配。左故障worker已正常disconnect退出；两臂无owner、无保持宿主、无任务动作。sudo -n检查需交互认证，未更改CAN桥。已异步请用户检查左供电与CAN两端，回复前不再初始化。三路准备录像1794849/PTY48224已09:06:14正常STOP，309.005秒，18个MP4首末帧可解码；当前无录像。记录FLOWER_INSERTION_EXPERIMENT_RECORD_20261003.md，目录analysis/flower_trial04_20261003；恢复后继续同轮、新recording02，重新保存有效回位参考和新鲜图，不复用前轮路径。
+
+
+2026-10-03 09:10后续：用户已再确认连接并清场，trial04 recording02从09:07:28.392在录，PID1852033/PTY58570。第二次左SDK连接仍RX0/null，已正常disconnect。用户提示查MD，历史相同现象由重建slcand修复；现有tools/rebuild_left_can_bridge.py --check通过，旧左桥PID1271875。已异步请用户本机执行sudo python3 /home/tuojing/arx_r5_control/tools/rebuild_left_can_bridge.py；工具sudo需交互认证。等待结果，不重复SDK初始化；两臂disabled无owner、无保持宿主，trial04正式started_at仍空。恢复后新图/有效反馈/新回位参考通过再开始，原准备recording已封存。
+
+
+2026-10-03 09:14最新：用户执行重建桥成功，左桥PID1884573/new can0索引26。第三次左SDK（重建后一次）仍RX0/null；被动CAN监听确认左0远端帧、右1102帧/秒，日志新SDK已绑定接口26。左故障worker已disconnect退出，双臂disabled/unowned，无任务动作。已请求用户核实全局画面右侧负责抓花的机械臂电源指示/急停。trial04仍准备受阻，未保存有效回位参考；recording02 PID1852033/PTY58570仍在录，其他保持/策略宿主不存在。不得因为桥重建成功就声称已连上左电机，等待实际链路状态变化后再SDK初始化。
+
+
+### 2026-10-03T09:23:13.722545+08:00 插花第4轮仍受左CAN无回包阻塞
+09:21–09:22 用户确认负责抓花的左臂指示灯亮、急停释放、线缆已连接；随后按请求重插左CANable USB并执行restore_can.sh成功，清场完成。首次脚本清理旧桥1884573并建立can0索引27，新桥1939916；第二次“can0 already exists”是重复执行保护，不代表首次恢复失败。未保存用户终端中与诊断无关的输入。三路recording02一直正常采集。09:21:34按正常connect入口进行第4次左SDK初始化（对应真实USB重新枚举/桥重建），仍rx_count=0、六关节为空并锁存反馈超时。09:22:29被动监听1.5秒：can0本地回显2067、远端0，内核RX=0，TX从74958增至77030；同期can1远端1633帧。随后正常disconnect左故障worker，确认worker_running=false；两臂保持disabled/unowned，无抓取动作。证据：[USB重插后的连接及被动监听](analysis/flower_trial04_20261003/preflight/after_usb_replug/)。接口恢复和电源灯亮仍不足以证明电机通信正常；尚未定位到具体适配器、线路或本体侧部件，不将问题归因于GPT，也不称线缆松脱。软件SDK重连、桥重建和USB重新枚举均已验证未恢复反馈，下一步需要现场对CAN适配器/线缆/本体通信供电进行区分排查，不能盲目使能或重复启动。
+
+
+2026-10-03 09:24更新：插花第4轮仍在准备，左can0 worker已退出、fault、六关节反馈空；can0 RX=0且1.2秒未增长，右can1同期RX+1680。无需再按同样条件重复SDK connect；已重建桥及USB重插仍无左侧远端帧。双臂disabled/unowned，无监督宿主，未发任务运动。三路recording02经STOP正常结束，09:07:28.392–09:23:48.416，51个MP4首末帧可解码；原文件保留。记录见FLOWER_INSERTION_EXPERIMENT_RECORD_20261003.md及trial04/status.json。需现场定位左适配器到本体通信链路恢复RX/真实关节反馈后才能使能；不得关闭心跳或反馈保护。
+
+
+准备录像recording02已于2026-10-03T09:23:48.416416+08:00通过stop_file正常结束，时长980.024秒；本次拟停止前发现manifest已completed，未重复停止。共51个MP4，逐文件首末帧可解码核验结果True，三路各9799帧，HTTP错误均0。核验见recording02/playability_check.json。当前无三路录制进程；恢复任务前须新建recording03并验证新鲜帧。两臂未使能，左SDK已断开，未抓花。
+
+
+2026-10-03T09:27:58.481668+08:00 用户再次插拔并确认结束清场。只读核对固定左USB序列号208833765931已重新枚举，can0消失，旧左桥1939916残留，右can1/SDK持续正常。左SDK未运行，两臂disabled/unowned。尝试sudo -n执行原restore_can.sh，被系统要求交互认证，脚本未运行、未进行SDK初始化或任务运动。已请求用户本机再次运行该脚本；这次缺少的是插拔后的接口重建，不可沿用上次“can0已恢复”状态。三路录像当前已停止，反馈重连前将新建recording03。证据preflight/retry_092700/。
+
+
+录像中断：recording03于09:36:50.029898收到SIGTERM并完成封装，信号发送方未确定，无STOP文件；截至09:41后检查才发现。已有27个MP4首末帧均可解码，但结束后的部分空爪接近动作缺连续录像，只有review逐步图片/动作日志，不能称全程录像。立即停止新任务命令、保留健康双臂带电保持。新三路MP4 recording04于2026-10-03T09:42:57.312297+08:00启动（PID2445131/PTY31369），缺口367.282秒。已询问是否另一个终端执行停止或清理；答复前保持不动。增加本轮只读check_recording.py，在每次动作提交前核验manifest、对应活PID、三路新鲜帧增长；不改控制保护。用户已确认每次任务三路MP4，记录当前缺口而不掩盖。
+
+### 2026-10-03 插花04相机保持交接
+
+旧宿主PID2077259的相机URLError timeout在静止时锁存；双臂保持未失能。新增窄范围相机故障交接入口，34项测试通过，两次连续三相机与不变保持核验后，按原冻结/核验交接保留全部关节和夹爪目标。当前宿主PID3500319、工具会话75027、analysis/flower_trial04_20261003/review02，working-arm left。旧review只留证据，勿再发命令；勿终止新宿主。录像04 PID2445131/session31369仍录三路MP4。任务回位必须用return_reference.json，不能用review02的交接姿态initial_state.json。
+
+当前两次局部抓取未成功，左爪全开空爪，用户指出仍在花头上方。计划仅下降20毫米，尚未发送；恢复后新图又出现操作者手臂靠近连杆，已请求清场，必须收到新的确认和清场新图才继续。

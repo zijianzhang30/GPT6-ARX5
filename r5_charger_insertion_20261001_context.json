@@ -1,0 +1,36 @@
+{
+  "instruction": "LEFT ONLY supplemental trial 7: use current visual setup to grasp two-prong charger from black container, insert in GLOBAL-camera RIGHTMOST socket two-pin openings, verify release and return LEFT. RIGHT remains disabled; no commands to it.",
+  "content": [
+    "你正在有人在场监督下执行任务02补充第7次，协议v5-left-only-rightmost-tracking-reserve。原定5次已结束且均未核验插入成功；本次由用户另行授权，不能覆盖旧记录或混改原5次统计。\n\n本轮目标：只由物理左臂can0抓取黑色容器内白色两脚手机充电器，以本次新鲜画面识别USB面朝上的当前摆放及外壳方向抓持，插入全局相机画面从右数第一个插位的两孔（靠电源线和开关的一端，组合插位的两孔部分）。该目标替代旧的正中间两孔；先用新图识别具体孔位，不沿用前轮坐标。横向是外壳摆放和夹持方向，插入运动必须沿实际插孔轴，不是水平推入平放插线板。插脚在容器中被遮挡，试提后重新核对方向。\n\n物理右臂can1全程失能、静止，只读监视，不使能、不下发关节或夹爪目标、不固定插线板、不复位。仅运行一个single_policy_review.py --arm left宿主。每步使用新鲜全局和腕图审核整臂、相机、桌面、电线与支撑间隙，不声称具有自动碰撞检测。\n\n启动前：插线板保持断开市电；操作者已确认放稳、手和工具移开并要求重启。检查两侧ready、反馈新鲜、无故障和未占用，左夹爪为空；保存三图、两侧状态及本轮初始关节。只建立左臂使能保持。\n\n严格逐段执行：\n1. 张开的左夹爪经清楚可见的自身一侧空旷路径接近充电器，先横向对齐，再分开前伸与下降。夹指只能包围露出的绝缘外壳两侧，不夹金属脚或黑色容器，不以画面投影居中代替实际包围核验。\n2. 分步闭爪，短距离竖直试提；全局及腕图确认充电器单独离开容器、容器不随动、物体稳定随夹爪移动。没有抓起就停止运输，核查偏差；若支撑随动或卡住，不强拉。核对两金属脚朝向和长边方向。\n3. 有足够垂直间隙后运输到本轮指定最右侧插位上方。在无接触处修正横向和角度；避免靠电源线、开关和插线板边缘处发生干涉，右臂仍不动。\n4. 只有两脚分别对准正确两孔且方向一致时才沿孔轴小步接近。无已验证的接触力控制；出现接触却不进入、板移位或翘起、物体转动、看不清或无可辨认进展，停止推进，核查并在明确分离后撤开。禁止累加下压、横向拖拽、扭动或加大动作克服阻力，不调用右臂扶持。\n5. 只有正确就位有充分证据才松爪、空爪撤离，再以至少两次相隔数秒的新图确认独立稳定插在指定最右侧两孔。工具返回、末端位置、夹爪开度和模型done不证明插入；不通电测试充电。遮挡不能算成功。\n6. 左臂空爪避开物体和线缆，沿逐段审核的有界路径回到本轮保存的初始姿态；按原有2.5度范围核验关节、静止和最终物体稳定。右臂无写命令。插入结果与受控回位分别记录。\n\n保留既有0.01m/s平移、0.05rad/s旋转、9度/s关节速度、0.3控制器速度，以及新鲜度、心跳、owner、预算、关节、轨迹、到位和跟踪保护。预算只续左臂，不修改阈值。空旷且整段可见时减少无必要分段，接触与成功核验仍逐段执行。有人手进入立即暂停任务动作，确认移开并刷新图像后再继续。\n\n若插入未完成，先在清楚支撑上放稳充电器，经支撑核验才松爪，再空爪回位。物体悬空或伸展时不得直接结束保持宿主导致失能回落。故障时保留证据，不自动重播或绕过保护。\n\n保存本轮prompt/协议、初始与最终状态、逐步图像及事件，记录启动、首次动作、抓起、插入、松爪、撤离、回位、结束及总用时。单列人工介入、等待、局部重试及异常；结果必须依据实物，人工调姿不得隐去。下一轮需重新摆放就绪，不自动连续重播。\n\n本次用户明确要求由agent根据相机与反馈自行逐段判断，避免把常规视觉审核交给用户、不要要求用户手动接管作为普通流程。优先利用每条动作后的新鲜全局和腕图；不重复询问可从已有证据判断的内容。此偏好不构成遮挡时盲目下压、碰撞或力控保护的豁免；确实无法核验接触或抓持状态时停止推进并保持，不能捏造成功。不得直接重播第5次坐标；第5次出现外部场景变化和未核验插入，所有新动作依据本次观察。\n\n本轮补充规划保护：唯一左臂宿主启动参数--tracking-reserve-deg 3.5。原2度反馈限位保持不变，指令路径额外预留3.5度；起始关节已在新增余量内时只允许保持或往内退出，不进一步靠近原限位。检查全部中间轨迹点，拒绝不消耗动作预算、不失能；不得关闭该检查来继续。运输依据当前图像选择较低但仍有明确物体间隙的高度，避免以高位大横移逼近J4下限。测试通过不证明机械制动或实机无故障。\n"
+  ],
+  "task_id": "02",
+  "protocol_version": "v5-left-only-rightmost-tracking-reserve",
+  "planned_trials": 5,
+  "execution_mode": "attended_stepwise_review",
+  "target": {
+    "object": "two-prong phone charger",
+    "socket": "rightmost position in global-camera view, two-pin openings of combination socket near cable/switch",
+    "manipulator": "left_can0",
+    "fixture_candidate": "none; right arm must remain disabled and unmoved",
+    "support": "Black container; USB face up in current preflight, insulated body exposed, pins obscured until lift"
+  },
+  "preconditions": {
+    "mains_disconnected_confirmed": true,
+    "right_disabled_and_left_path_visually_reviewed": true,
+    "operator_restart_requested": true,
+    "hands_clear_in_latest_three_views": true
+  },
+  "execution_status": "supplemental_trial7_preflight",
+  "note": "Existing single-arm host controls left only. Right is read-only. No force control or collision certification introduced.",
+  "speed_policy": {
+    "tcp_translation_m_s": 0.01,
+    "tcp_rotation_rad_s": 0.05,
+    "joint_velocity_deg_s": 9,
+    "controller_speed_setting": 0.3,
+    "runtime_limits_modified": false,
+    "approach": "Reduce unnecessary free-space segmentation only when the whole path is visible and clearance is verified; keep all contact/near-socket/phase verification steps.",
+    "additional_planning_tracking_reserve_deg": 3.5
+  },
+  "trial": 7,
+  "supplemental": true
+}

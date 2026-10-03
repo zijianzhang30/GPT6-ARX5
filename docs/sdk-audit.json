@@ -1,0 +1,81 @@
+{
+  "sha256": "30239795532e0d440842405f02092c85f95b5f4b0813c2bdf95b22d89960fa18",
+  "arm_dof": 6,
+  "gripper_dof": 1,
+  "joints": [
+    {
+      "name": "joint1",
+      "axis": "0 0 1"
+    },
+    {
+      "name": "joint2",
+      "axis": "0 1 0"
+    },
+    {
+      "name": "joint3",
+      "axis": "0 1 0"
+    },
+    {
+      "name": "joint4",
+      "axis": "0 1 0"
+    },
+    {
+      "name": "joint5",
+      "axis": "0 0 1"
+    },
+    {
+      "name": "joint6",
+      "axis": "1 0 0"
+    }
+  ],
+  "lower_rad": [
+    -3.14,
+    -0.1,
+    -0.1,
+    -1.29,
+    -1.4835298641951802,
+    -1.7453292519943295
+  ],
+  "upper_rad": [
+    2.618,
+    3.6,
+    3.0,
+    1.29,
+    1.4835298641951802,
+    1.7453292519943295
+  ],
+  "lower_deg": [
+    -179.9087476710785,
+    -5.729577951308233,
+    -5.729577951308233,
+    -73.91155557187619,
+    -85.0,
+    -100.0
+  ],
+  "upper_deg": [
+    150.00035076524952,
+    206.26480624709637,
+    171.88733853924697,
+    73.91155557187619,
+    85.0,
+    100.0
+  ],
+  "evidence": {
+    "bounds_initialization": "ControllerBase constructor stores offsets 0x408..0x430 / 0x440..0x468",
+    "bounds_usage": "statePositionControl 0x154ad6..0x154b3a clamps first six joints",
+    "joint_command": "ControllerThread::setJointPositions 0x161794 loops indices 0..5",
+    "gripper_command": "ControllerThread::setCatch 0x161654 writes command index 6",
+    "feedback": "ControllerThread::getJointPositons 0x16103e returns 7 values (position minus initialization offset), no division by 5"
+  },
+  "follower_type": 0,
+  "hardware_validation": false,
+  "gripper_width_mm_from_manual": [
+    0,
+    80
+  ],
+  "warnings": [
+    "URDF limits +/-10 rad are placeholders, not this controller's limits.",
+    "Master-to-follower gain 5 is not a same-gripper feedback conversion.",
+    "Clamp bounds are software evidence, not validation of the user's physical model."
+  ]
+}

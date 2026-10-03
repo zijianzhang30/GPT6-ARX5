@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="control-token" content="__TOKEN__"><title>R5 Studio · 机械臂工作台</title><link rel="stylesheet" href="/style.css"><script src="/app.js" defer></script></head>
+<body>
+<header><div class="brand"><span class="brandmark">R5</span><div><strong>R5 Studio</strong><span class="subbrand">机械臂工作台</span></div></div><div class="top-status"><span id="mode-badge" class="pill simulation">实机模式</span><span id="connection" class="connected">● 本地服务连接中</span></div><div class="header-actions"><button id="help" class="quiet">快捷键 <kbd>?</kbd></button><button id="connect" class="primary">连接机械臂</button><button id="disconnect" class="quiet" hidden>断开</button><button id="enable" class="primary">启用控制</button><button id="stop" class="stop">暂停 <kbd>Space</kbd></button></div></header>
+<section id="dual-overview" class="dual-overview" hidden aria-label="左右机械臂状态"><div class="dual-heading"><div><span class="eyebrow">TWO ARMS · SEPARATE CONTROL</span><h2>双臂状态总览</h2></div><p>左右按全局画面区分 · 一次只启用一只臂</p></div><div id="arm-cards" class="arm-cards"></div></section>
+<main>
+<section class="viewport-card">
+<div class="section-head"><div><span class="eyebrow">DIGITAL WORKSPACE</span><h1>机械臂实时控制。</h1><p>6 轴机械臂 + 1 轴夹爪 · 模型跟随实际关节反馈</p></div><span id="motion-state" class="pill">已暂停</span></div>
+<div class="scene-wrap"><canvas id="scene" aria-label="R5 三维运动学预览，可拖动旋转视角" tabindex="0"></canvas><div class="scene-label"><span class="dot"></span> R5 / FOLLOWER <small>运动学示意 · 非碰撞仿真</small></div><div class="view-tools"><button data-view="iso" class="active">透视</button><button data-view="front">正视</button><button data-view="top">俯视</button></div><div class="scene-hint">拖动旋转视角 · 滚轮缩放</div></div>
+<section class="camera-console" aria-labelledby="camera-title">
+<div class="camera-console-head"><div><span class="eyebrow">LIVE VISION</span><h2 id="camera-title">双路现场画面</h2></div><p>本机直连 · 示范可录制 · 不上传</p></div>
+<div class="camera-grid">
+<article class="camera-card" data-camera="gemini"><div class="camera-card-head"><div><strong>Gemini 305</strong><span>主视角 · 848 × 480</span></div><span class="camera-live"><i></i><span id="camera-gemini-status">连接中</span></span></div><div class="camera-frame"><img id="camera-gemini-image" alt="Gemini 305 实时彩色画面" hidden><p id="camera-gemini-message">正在读取 Gemini 彩色接口…</p></div><div class="camera-card-foot"><span id="camera-gemini-detail">等待第一帧</span><button class="quiet camera-toggle" data-camera-toggle="gemini">暂停</button></div></article>
+<article class="camera-card" data-camera="external"><div class="camera-card-head"><div><strong>外接 RGB</strong><span>辅助视角 · 640 × 480</span></div><span class="camera-live"><i></i><span id="camera-external-status">连接中</span></span></div><div class="camera-frame camera-frame-4x3"><img id="camera-external-image" alt="第二台外接相机实时画面" hidden><p id="camera-external-message">正在读取第二台外接相机…</p></div><div class="camera-card-foot"><span id="camera-external-detail">等待第一帧</span><button class="quiet camera-toggle" data-camera-toggle="external">暂停</button></div></article>
+<article class="camera-card" data-camera="gemini_right" hidden><div class="camera-card-head"><div><strong>右臂手腕 · Gemini 305</strong><span>848 × 480 · CV2C86100180</span></div><span class="camera-live"><i></i><span id="camera-gemini_right-status">连接中</span></span></div><div class="camera-frame"><img id="camera-gemini_right-image" alt="右臂手腕相机实时彩色画面" hidden><p id="camera-gemini_right-message">正在读取右臂手腕相机…</p></div><div class="camera-card-foot"><span id="camera-gemini_right-detail">等待第一帧</span><button class="quiet camera-toggle" data-camera-toggle="gemini_right">暂停</button></div></article>
+</div>
+</section>
+<section class="demonstration" aria-labelledby="demo-title">
+<div class="small-head"><div><span class="eyebrow">TEACH BY DOING</span><h2 id="demo-title">遥操示范记录</h2></div><span id="demo-status" class="pill" role="status">正在连接录制服务…</span></div>
+<p class="demo-intro">先开始录制，再按原来的方式遥操。保存腕部、第三人称画面和动作反馈，供之后分析。</p>
+<a id="demo-upgrade" href="http://127.0.0.1:8768" hidden>打开录制工作台 →</a>
+<div class="demo-form"><label>示范名称<input id="demo-name" maxlength="120" value="抓取网球" autocomplete="off"></label><button id="demo-start" class="primary" disabled>开始录制</button><label>本次结果<select id="demo-result"><option value="unspecified">尚未标注</option><option value="success">成功抓起</option><option value="failed">未成功</option><option value="partial">只完成部分</option></select></label><button id="demo-stop" class="secondary" disabled>停止并保存</button></div>
+<div class="demo-phases" aria-label="标记当前动作阶段"><span>阶段标记</span><button data-demo-phase="approach" disabled>靠近</button><button data-demo-phase="grasp" disabled>夹取</button><button data-demo-phase="lift" disabled>抬起</button><button data-demo-phase="release" disabled>放下 / 松开</button><label class="demo-note-label"><span class="sr-only">示范备注</span><input id="demo-note" maxlength="500" placeholder="可选备注，例如：碰到球但没有夹牢"></label><button id="demo-note-add" disabled>记备注</button></div>
+<p id="demo-detail" class="demo-detail" aria-live="polite">录制按钮不会启用或移动机械臂。停止录制也不会暂停机械臂。</p>
+<p class="fine">画面目标 10 帧/秒/路，状态目标 20 次/秒；按本机接收时间对齐，非硬件同步。录制期间即使隐藏页面或暂停预览，也会继续采集，最长 15 分钟或约 2 GB。抓取结果由你标注。</p>
+<details id="demo-history"><summary>已保存的示范与动作分析</summary><div id="demo-list" class="demo-list">暂无示范。</div><div id="demo-analysis" hidden></div></details>
+</section>
+<div class="telemetry"><div><span>末端 X</span><strong id="x-value">—</strong><small>mm</small></div><div><span>末端 Y</span><strong id="y-value">—</strong><small>mm</small></div><div><span>末端 Z</span><strong id="z-value">—</strong><small>mm</small></div><div><span>夹爪开口</span><strong id="grip-value">40.0</strong><small id="grip-unit">SDK 原始值</small></div></div>
+<div id="notice" class="notice" role="status" aria-live="polite">正在连接本地工作台…</div>
+<div class="bottom-grid"><section class="saved"><div class="small-head"><h2>保存的位置</h2><button id="save-pose" class="quiet">＋ 保存当前</button></div><div id="saved-list" class="saved-list"><p class="muted">把调好的位置存下来，之后一键调用。</p></div><div class="file-actions"><button id="export" class="quiet">导出位置 JSON</button><button id="reset" class="quiet">重置模拟</button></div></section><section class="session"><h2>会话记录</h2><div id="events" class="event-list"><p class="muted">控制、目标与边界提示会显示在这里。</p></div></section></div>
+</section>
+<aside class="controls">
+<div id="arm-selector" class="arm-selector" hidden><label for="active-arm">当前控制对象</label><select id="active-arm"><option value="left">左臂 · can0</option><option value="right">右臂 · can1</option></select><p id="active-arm-label">左臂的关节、夹爪和末端控制</p><small>切换前需先失能。所有目标只发往当前选中的机械臂。</small></div>
+<div class="control-title"><div><span class="eyebrow">MANUAL CONTROL</span><h2>手动控制</h2></div><button id="hardware-info" class="quiet">实机接入说明</button></div>
+<div class="speed-box"><label for="speed">移动速度 <strong id="speed-value">25%</strong></label><input id="speed" type="range" min="5" max="100" step="5" value="25"><div><span>精细</span><span>快速</span></div></div>
+<div class="keyboard-toggle"><label><input type="checkbox" id="keyboard" checked> 启用键盘点动</label><span><kbd>1–6</kbd> 选轴 <kbd>↑↓</kbd> 移动</span></div>
+<div class="tabs" role="tablist" aria-label="控制模式"><button id="joint-tab" role="tab" aria-selected="true" class="active">关节 J1–J6</button><button id="cart-tab" role="tab" aria-selected="false">末端 XYZ / 姿态</button></div>
+<div class="mode-hint" id="mode-hint">按住 − / + 移动；直接输入角度后点击「执行目标」。</div>
+<section id="joint-panel"><div class="column-labels"><span>关节 / 实际角度</span><span>目标角度（°）</span></div><div id="joint-rows"></div><button id="apply-joints" class="wide secondary motion-action">执行关节目标</button></section>
+<section id="cart-panel" hidden><div class="frame-bar"><label for="frame">点动坐标系</label><select id="frame"><option value="base">基座坐标系</option><option value="tool">工具坐标系</option></select></div><div id="cart-rows"></div><button id="apply-pose" class="wide secondary motion-action">执行末端目标</button><p class="fine">输入框使用基座坐标系。旋转点动绕所选坐标轴；接近奇异点时建议切换关节控制。</p></section>
+<section class="gripper"><div class="small-head"><h2>夹爪 <span class="dof">第 7 自由度</span></h2><strong id="grip-percent">50%</strong></div><div class="grip-range"><span>闭合</span><input id="gripper" aria-label="夹爪目标开口" type="range" min="0" max="80" step="1" value="40"><span>张开</span></div><div class="grip-actions"><button class="jog motion-action" data-grip="-1">闭合 <kbd>[</kbd></button><div><input id="grip-input" aria-label="夹爪目标毫米" type="number" min="0" max="80" step="1" value="40"><span id="grip-input-unit">SDK</span></div><button class="jog motion-action" data-grip="1">张开 <kbd>]</kbd></button></div><button id="apply-grip" class="wide quiet motion-action">执行夹爪目标</button><p class="fine"><span id="grip-description">实机使用 SDK 原始目标 0–5；非毫米。模型夹爪开口为估计显示。</span></p></section>
+<p class="fine footer-note">按住移动，松开即停。切出窗口自动暂停。<br>界面暂停不是物理急停。</p>
+</aside>
+</main>
+<footer><span>ARX R5 · 6R + 1G</span><span id="singularity">工作范围：SDK 关节限位</span><span id="backend-label">仅本机访问 · 实机后端</span></footer>
+<dialog id="dialog"><button id="close-dialog" class="dialog-close" aria-label="关闭">×</button><div id="dialog-content"></div></dialog>
+<div id="toast" role="alert" hidden></div>
+<script src="/dual.js" defer></script>
+</body></html>
