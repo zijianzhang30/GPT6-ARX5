@@ -130,6 +130,17 @@ left rx_count -> 0
 
 如果 `can0` 存在但 RX 为 0、关节仍为 null，优先检查左臂本体电源、机械臂端 CAN 插头、CANable 到机械臂的线缆/焊点以及左右适配器是否接反。`can1` 有包而 `can0` 无包时，问题不在 GPT 推理或 IK。
 
+### 4.3 接口存在但旧桥接疑似失效
+
+2026-10-06出现can0仍UP、发送计数增长、接收不增长，新SDK仍无回包的情况。用户明确要求重启连接后，先退出故障SDK，再使用[受限重启脚本](tools/restart_left_can_bridge.py)。默认仅检查，不改变硬件：
+
+```bash
+.venv-policy/bin/python tools/restart_left_can_bridge.py
+sudo /usr/bin/python3 tools/restart_left_can_bridge.py --restart
+```
+
+脚本只接受左侧disabled、无owner、无worker且fault/disconnected，核对唯一桥接进程完整参数与固定适配器身份；优雅退出旧桥接，等待接口消失，再调用原restore_can.sh重建。不会初始化SDK，不操作右侧接口；任何前置条件不符即停止。需要管理员认证，不把密码存入脚本、命令行或实验记录。该次接口重建成功不等于电机反馈已恢复，后者仍需满足清场/录像条件后逐侧SDK初始化验证；不得循环重建掩盖线缆或供电问题。
+
 ## 5. 启动上游服务与 SDK
 
 若 8765/8766 已经运行且只是短暂断开，优先复用服务；不需要为了启动策略而重启 SDK。冷启动时分别在两个终端运行：

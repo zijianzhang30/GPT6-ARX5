@@ -294,6 +294,38 @@ class CartesianTests(unittest.TestCase):
         self.assertFalse(result['grasp_verified'])
         self.assertFalse(any(name in ('home', 'enable', 'connect') for name, _ in self.client.commands))
 
+    def test_session_small_step_filter_rejects_before_any_command_or_budget_debit(self):
+        self.low.minimum_cartesian_command_step_deg = 2.
+        plan = self.robot.plan([self.target()], 'Small step fixture')
+        before = self.low.guard.snapshot()
+        for operation in (self.low.preview_timed_trajectory, self.low.execute_trajectory):
+            with self.assertRaisesRegex(ValueError, 'below this session minimum'):
+                operation(plan)
+            self.assertEqual(self.client.commands, [])
+            self.assertEqual(self.low.guard.snapshot(), before)
+            self.assertFalse(self.low.consumed)
+            self.assertIsNone(self.low.fault)
+            self.assertTrue(self.client.current['enabled'])
+            self.assertEqual(self.client.current['control_state'], 'holding')
+
+    def test_session_step_filter_preserves_larger_target_and_stall_protection(self):
+        from r5_cartesian import rpy_to_quaternion
+        self.low.minimum_cartesian_command_step_deg = 2.
+        self.robot.state()
+        q = np.radians(self.client.current['command_deg'])
+        q[0] += np.radians(3.)
+        pose = self.robot.frames.sdk_to_tcp(self.robot.solver.forward_kinematics(q))
+        target = {'pose_xyzquat': [*pose[:3], *rpy_to_quaternion(pose[3:])]}
+        plan = self.robot.plan([target], 'Larger step fixture')
+        self.low.preview_timed_trajectory(plan)
+        self.assertEqual(self.client.commands, [])
+        self.client.stall = True
+        with self.assertRaisesRegex(R5ExecutionFault, 'did not settle'):
+            self.low.execute_trajectory(plan)
+        submitted = next(fields for action, fields in self.client.commands if action == 'policy_trajectory')
+        np.testing.assert_allclose(submitted['points_deg'][-1], np.degrees(q), atol=.01)
+        self.assertEqual(self.client.commands[-1][0], 'stop')
+
     def test_lost_trajectory_ack_latches_stop_without_resubmission(self):
         target = self.target()
         self.client.timeout = 'policy_trajectory'

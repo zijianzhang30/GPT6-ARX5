@@ -10,7 +10,7 @@ import threading
 from jsonschema import Draft202012Validator
 
 import r5_cartesian  # Installs the vendored GPT-Policy import path.
-from r5_policy_backend import R5ExecutionFault
+from r5_policy_backend import R5ExecutionFault, R5PoweredHoldFault
 from visual_control import validate_action
 from gpt_policy.harness.models import AgentContext
 from gpt_policy.harness.protocol import instructions
@@ -36,6 +36,7 @@ class DualCartesianBackend:
         self.robots, self.vision_check = dict(robots), vision_check
         self.catalog = robots['left'].catalog
         self.fault = None
+        self.fault_hold = False
         self.operation_lock = threading.Lock()
 
     @property
@@ -54,6 +55,8 @@ class DualCartesianBackend:
 
     def check(self):
         if self.fault:
+            if self.fault_hold:
+                raise R5PoweredHoldFault(self.fault)
             raise R5ExecutionFault(self.fault)
         try:
             for robot in self.robots.values():
@@ -64,12 +67,31 @@ class DualCartesianBackend:
 
     def abort(self, reason):
         self.fault = self.fault or str(reason)
+        self.fault_hold = False
         for robot in self.robots.values():
             try:
                 robot.abort(self.fault)
             except R5ExecutionFault:
                 pass
         raise R5ExecutionFault(self.fault)
+
+    def retain_stationary_faults(self, reason):
+        """Latch the idle companion too; any failed qualification aborts both."""
+        try:
+            if not any(r.backend.fault_hold is not None for r in self.robots.values()):
+                raise R5ExecutionFault('No qualified arrival fault hold exists')
+            states = {}
+            for side, robot in self.robots.items():
+                low = robot.backend
+                if low.busy:
+                    raise R5ExecutionFault('Paired fault hold requires finished execution')
+                states[side] = (low.supervise() if low.fault_hold is not None
+                                else low.retain_stationary_fault(str(reason)))
+            self.fault = self.fault or str(reason)
+            self.fault_hold = True
+            return states
+        except Exception as exc:
+            self.abort('Paired fault hold unavailable: '+str(exc))
 
     def state(self):
         self.check()
@@ -148,6 +170,9 @@ class DualCartesianBackend:
                     results[futures[future]] = future.result()
             except BaseException as exc:
                 barrier.abort()
+                if isinstance(exc, R5PoweredHoldFault) and len(callbacks) == 1:
+                    self.retain_stationary_faults(str(exc))
+                    raise
                 self.abort('Paired execution interrupted: ' + str(exc))
         return results
 
@@ -215,6 +240,8 @@ class DualCartesianBackend:
                 raise ValueError('Unsupported paired action')
             if not callbacks:
                 raise ValueError('At least one side must have a target')
+            if len(callbacks) > 1 and any(r.backend.retain_settle_fault_hold for r in self.robots.values()):
+                raise ValueError('Fault hold mode requires one moving arm at a time')
             results = self._parallel(callbacks)
             self.check()
             return {'arms': results, 'held_sides': [side for side in ARMS if side not in results],

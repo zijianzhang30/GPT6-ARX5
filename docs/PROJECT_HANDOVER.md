@@ -1,5 +1,7 @@
 # 项目交接文档入口
 
+新对话和下一项桌面实验的操作指南：[NEW_TASK_START_GUIDE.md](../NEW_TASK_START_GUIDE.md)。
+
 完整交接文档位于项目根目录：
 
 `/home/tuojing/arx_r5_control/PROJECT_HANDOVER.md`

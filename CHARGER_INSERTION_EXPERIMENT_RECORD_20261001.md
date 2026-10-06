@@ -612,3 +612,9 @@ LEFT ONLY supplemental trial 7: use current visual setup to grasp two-prong char
 
 
 21:34用户要求停止并删除本轮无用持续录像，随后要求重新执行。录像1411667已正常结束于2026-10-02T21:34:14.427041+08:00并退出；仅删除trial10/recording目录（19.52GB），逐步照片、事件、暂停诊断和MD保留。删除与原录像起止统计见trial10/recording_stop_deletion_summary.json。用户已授权新尝试，但当前1439743/60756持物保持和相机锁存尚未解除，未发复位/失能/重启动作，新试次尚未开始。
+
+## 第11轮（2026-10-05）最终结案索引
+
+第11轮四次局部夹取均未验证插头独立脱离托座，未进入插接；包含人工重新摆放。最后释放、空爪撤离后插头在托座上稳定，左臂受控回位通过；右臂因初态J6超限全程未使能，仅静态相机观察。本轮没有新的运行失能故障。
+
+[当日记录](CHARGER_INSERTION_EXPERIMENT_RECORD_20261005.md)、[完整MD与证据](analysis/charger_trial11_20261005/RUN_RECORD.md)、[资源与耗时](analysis/charger_trial11_20261005/PERFORMANCE.md)。第10轮未完整结案的历史字段保持原样，不据本轮结果补造第10轮结束时间。

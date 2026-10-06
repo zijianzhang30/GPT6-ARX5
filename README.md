@@ -1,5 +1,13 @@
 # R5 Studio · 实机控制
 
+## 代码、实验记录与任务 Skill
+
+仓库包含控制程序、测试、实验 Markdown 记录和 HTML 报告。完整的 ARX R5 桌面任务 Skill 位于 [`skills/arx-r5-tabletop-tasks/`](skills/arx-r5-tabletop-tasks/SKILL.md)，包括任务入口、各任务参考指南及 `agents/openai.yaml`。此目录是本机 `/home/tuojing/.codex/skills/arx-r5-tabletop-tasks/` 的版本化副本。
+
+Skill 中的绝对路径和历史设备状态来自本机实验环境，其他机器使用时需要核对。原始视频、遥测、运行日志、虚拟环境与编译产物保留在本机，不纳入 Git；文档指向 `analysis/` 和 `recordings/` 的证据链接需要对应的本地数据。
+
+**开启新对话或下一项桌面实验：先读[新任务启动指南](NEW_TASK_START_GUIDE.md)。** 内含可复制提示词、历史10项实验索引、健康保持/冷启动分支，以及三路录像、回位、MD与资源记录流程。
+
 **接手当前双臂 GPT-Policy 调试，请先阅读 [项目说明与调试交接](PROJECT_HANDOVER.md)（2026-09-29）。** 完整文档位置是 `/home/tuojing/arx_r5_control/PROJECT_HANDOVER.md`；`docs/PROJECT_HANDOVER.md` 也提供入口。文档集中说明已实现功能、未解决问题、当前参数、双臂/单臂启动与故障排查。本 README 下方保留了早期单臂和只读阶段的说明，其中历史状态及旧参数不代表当前双臂部署；请以交接文档、实际代码和服务回读为准。
 
 当前默认启动实机后端。网页模型使用 SDK 实际反馈，目标与实际状态分开显示。没有连接或反馈失效时，不会显示模拟姿态冒充实测状态。双臂初始化、CAN 重建、SDK 连接和故障恢复请先阅读 [`MACHINE_INITIALIZATION_RUNBOOK.md`](MACHINE_INITIALIZATION_RUNBOOK.md)。

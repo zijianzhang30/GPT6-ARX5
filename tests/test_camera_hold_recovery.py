@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from unittest.mock import Mock, patch
 
-from camera_hold_recovery import (CAMERA_REJECTION, CAMERA_TIMEOUT_REJECTION,
+from camera_hold_recovery import (CAMERA_REJECTION, CAMERA_TIMEOUT_REJECTION, CAMERA_DECODE_REJECTION,
                                   CameraHoldHandoff, require_unchanged_targets,
                                   validate_camera_hold_log)
 
@@ -25,10 +25,13 @@ class CameraHoldRecoveryTests(unittest.TestCase):
                 dict(event='review_command_finished', command_index=2, outcome='rejected')]
 
     def test_only_completed_stationary_camera_rejections_are_eligible(self):
-        for reason in (CAMERA_REJECTION, CAMERA_TIMEOUT_REJECTION):
+        for reason in (CAMERA_REJECTION, CAMERA_TIMEOUT_REJECTION, CAMERA_DECODE_REJECTION):
             self.assertEqual(set(validate_camera_hold_log(self.events(reason))), {'left', 'right'})
         for reason in ('Independent policy heartbeat stalled', 'motor fault',
                        CAMERA_TIMEOUT_REJECTION + '; protective stop unconfirmed',
+                       CAMERA_DECODE_REJECTION + '; protective stop unconfirmed',
+                       'Camera supervision failed: OSError: broken data stream when reading image file',
+                       'Fresh camera observation required; stationary hold retained: Camera supervision failed: OSError: unrelated failure',
                        'Supervised camera frames are stale'):
             with self.subTest(reason=reason), self.assertRaises(ValueError):
                 validate_camera_hold_log(self.events(reason))

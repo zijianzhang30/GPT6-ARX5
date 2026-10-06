@@ -20,6 +20,9 @@ CAMERA_REJECTION = ('Fresh camera observation required; stationary hold retained
 CAMERA_TIMEOUT_REJECTION = ('Fresh camera observation required; stationary hold retained: '
                             'Camera supervision failed: URLError: '
                             '<urlopen error timed out>')
+CAMERA_DECODE_REJECTION = ('Fresh camera observation required; stationary hold retained: '
+                           'Camera supervision failed: OSError: '
+                           'broken data stream when reading image file')
 
 
 def validate_camera_hold_log(events):
@@ -37,7 +40,8 @@ def validate_camera_hold_log(events):
     for start, rejected, finish in zip(tail[0::3], tail[1::3], tail[2::3]):
         if (start.get('event') != 'review_command_started'
                 or rejected.get('event') != 'rejected'
-                or rejected.get('reason') not in (CAMERA_REJECTION, CAMERA_TIMEOUT_REJECTION)
+                or rejected.get('reason') not in (CAMERA_REJECTION, CAMERA_TIMEOUT_REJECTION,
+                                                CAMERA_DECODE_REJECTION)
                 or finish.get('event') != 'review_command_finished'
                 or finish.get('outcome') != 'rejected'
                 or start.get('command_index') != finish.get('command_index')):

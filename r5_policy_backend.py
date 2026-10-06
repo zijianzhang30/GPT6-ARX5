@@ -27,8 +27,25 @@ class R5ExecutionFault(RuntimeError):
     pass
 
 
+class R5SettleTimeout(R5ExecutionFault):
+    """The existing arrival test failed; never means a successful grasp."""
+
+
+class R5PoweredHoldFault(R5ExecutionFault):
+    """Task remains faulted while independent supervision maintains hold."""
+
+
 class R5PolicyBackend:
-    def __init__(self, client, vision_check, *, clock=time.monotonic, sleep=time.sleep):
+    def __init__(self, client, vision_check, *, clock=time.monotonic, sleep=time.sleep,
+                 minimum_cartesian_command_step_deg=0., retain_settle_fault_hold=False):
+        if type(retain_settle_fault_hold) is not bool:
+            raise ValueError('retain_settle_fault_hold must be a boolean')
+        if (not finite(minimum_cartesian_command_step_deg)
+                or not 0 <= minimum_cartesian_command_step_deg <= 24.):
+            raise ValueError('Minimum Cartesian command step must be finite within 0..24 degrees')
+        # Optional conservative proposal filter. This is not a calibrated motor
+        # deadband and never changes an endpoint, settle rule, or fault response.
+        self.minimum_cartesian_command_step_deg = minimum_cartesian_command_step_deg
         self.client = client
         self.vision_check = vision_check
         self.clock, self.sleep = clock, sleep
@@ -36,6 +53,10 @@ class R5PolicyBackend:
         self.observation = None
         self.consumed = False
         self.fault = None
+        self.retain_settle_fault_hold = retain_settle_fault_hold
+        self.fault_hold = None
+        self.fault_hold_failure = None
+        self.stop_requested = False
         self.busy = False
         self.engaged = False
         self.last_execution_feedback = None
@@ -50,8 +71,14 @@ class R5PolicyBackend:
 
     def _read_locked(self, *, holding=False):
         if self.fault is not None:
+            if self.fault_hold is not None:
+                raise R5PoweredHoldFault(self.fault)
             raise R5ExecutionFault(self.fault)
         state = self.client.state()
+        return self._validate_state(state, holding=holding, guard=self.guard)
+
+    def _validate_state(self, state, *, holding, guard):
+        """Shared health checks; the task-facing read always enforces its latch."""
         issues = feedback_issues(state)
         for key, expected in (("simulation", False), ("worker_running", True),
                               ("model_ready", True), ("enabled", True),
@@ -88,22 +115,54 @@ class R5PolicyBackend:
                 issues.append("Held gripper still has a pending target")
         if issues:
             raise R5ExecutionFault("; ".join(issues))
-        self.guard.check_state(state)
+        guard.check_state(state)
         return state
 
     def _fail(self, error, *, request_stop):
+        # Only this typed arrival failure may try the optional hold path. A
+        # camera, watchdog, transport or hardware error never enters it.
+        if (type(error) is R5SettleTimeout and request_stop
+                and self.retain_settle_fault_hold and self.fault is None):
+            try:
+                from fault_powered_hold import begin_fault_hold
+                begin_fault_hold(self, error, from_settle=True)
+            except Exception as exc:
+                self.fault_hold_failure = str(exc)
+            else:
+                raise R5PoweredHoldFault(self.fault) from error
         with self.command_lock:
+            if isinstance(error, R5PoweredHoldFault) and self.fault_hold is not None:
+                raise R5PoweredHoldFault(self.fault) from error
             if self.fault is None:
                 self.fault = str(error)
                 self.guard.latch(self.fault)
-                if request_stop:
-                    try:
-                        state = self.client.state()
-                        if state.get("enabled") and state.get("owner") == self.client.client:
-                            self.client.command("stop")
-                    except Exception:
-                        self.fault += "; protective stop unconfirmed"
+            if self.fault_hold is not None:
+                self.fault_hold_failure = self.fault_hold_failure or str(error)
+                self.fault_hold = None
+            if request_stop and not self.stop_requested:
+                self.stop_requested = True
+                try:
+                    state = self.client.state()
+                    if state.get("enabled") and state.get("owner") == self.client.client:
+                        self.client.command("stop")
+                except Exception:
+                    self.fault += "; protective stop unconfirmed"
             raise R5ExecutionFault(self.fault) from error
+
+    def retain_stationary_fault(self, reason):
+        """Quarantine an idle companion, without submitting an actuator target."""
+        from fault_powered_hold import begin_fault_hold
+        return begin_fault_hold(self, R5ExecutionFault(reason), from_settle=False)
+
+    def supervise(self):
+        """Watchdog-only entry: monitor hold without reopening the task API."""
+        try:
+            with self.command_lock:
+                if self.fault_hold is not None:
+                    return self.fault_hold.check()
+                return self.check()
+        except Exception as exc:
+            self._fail(exc, request_stop=self.engaged or self.busy)
 
     def abort(self, reason):
         self._fail(R5ExecutionFault(reason), request_stop=self.engaged or self.busy)
@@ -116,12 +175,15 @@ class R5PolicyBackend:
 
     def check(self):
         """Health callback; never acquires ownership or enables a disabled arm."""
+        if self.fault_hold is not None:
+            raise R5PoweredHoldFault(self.fault)
         try:
             with self.command_lock:
-                self._read(holding=not self.busy)
+                state = self._read(holding=not self.busy)
                 self.engaged = True
                 self.vision_check()
                 self._command("heartbeat")
+                return state
         except Exception as exc:
             self._fail(exc, request_stop=self.busy or self.engaged)
 
@@ -326,6 +388,18 @@ class R5PolicyBackend:
         # a pre-existing position-control residual that was never a new motion.
         arm_initial = np.array(initial['joints_deg'] if 'joints_deg' in target else requested_q)
         trace = []
+        # Diagnostic data only: no file I/O or extra hardware reads in this loop.
+        # Reset at entry so an early check failure cannot expose a previous settle
+        # trace as though it belonged to this attempt.
+        feedback = {'initial_measured_deg': initial['joints_deg'],
+                    'initial_command_deg': initial['command_deg'],
+                    'target': target, 'samples': [],
+                    'started_at_s': deadline-timeout, 'deadline_at_s': deadline,
+                    'settle_parameters': {
+                        'command_relative': command_relative, 'min_progress': min_progress,
+                        'max_residual_deg': POLICY_SETTLE_ERROR_DEG,
+                        'reverse_deadband_deg': reverse_deadband_deg}}
+        self.last_execution_feedback = feedback
         while self.clock() < deadline:
             self.check()
             state = self._read()
@@ -333,9 +407,7 @@ class R5PolicyBackend:
             trace.append({'at_s': now, 'joints_deg': state['joints_deg'],
                           'command_deg': state['command_deg'], 'gripper_raw': state['gripper_raw'],
                           'gripper_command_raw': state['gripper_command_raw']})
-            self.last_execution_feedback = {'initial_measured_deg': initial['joints_deg'],
-                                           'initial_command_deg': initial['command_deg'],
-                                           'target': target, 'samples': trace[-120:]}
+            feedback['samples'] = trace[-120:]
             samples.append((now, np.array(state["joints_deg"])))
             grips.append((now, state["gripper_raw"]))
             arm_ok = step_settled({"joints_deg": requested_q}, arm_initial, samples, now,
@@ -362,6 +434,8 @@ class R5PolicyBackend:
                            and abs(state["gripper_command_raw"]-target["gripper_raw"]) <= .01
                            and abs(state["gripper_raw"]-target["gripper_raw"]) <= GRIPPER_SETTLE_TOLERANCE_RAW
                            and (progress >= .5 or within_deadband))
+            trace[-1]['checks'] = {'arm_ok': bool(arm_ok), 'command_ok': bool(command_ok),
+                                   'grip_ok': bool(grip_ok)}
             if arm_ok and command_ok and grip_ok:
                 return state
             self.sleep(.05)
@@ -377,7 +451,7 @@ class R5PolicyBackend:
                            f"gripper_target_raw={target['gripper_raw']}, "
                            f"gripper_measured_raw={latest['gripper_raw']}, "
                            f"gripper_command_raw={latest['gripper_command_raw']}")
-        raise R5ExecutionFault("Action did not settle; no grasp/contact inferred from a stall"+detail)
+        raise R5SettleTimeout("Action did not settle; no grasp/contact inferred from a stall"+detail)
 
     def _reanchor_hold_to_measured(self, held):
         """Remove accepted tracking residual without commanding extra motion."""
@@ -416,6 +490,13 @@ class R5PolicyBackend:
         with self.operation_lock:
             self._trajectory_inputs(plan)
 
+    def _validate_cartesian_amplitude(self, amplitude):
+        if amplitude < self.minimum_cartesian_command_step_deg:
+            raise ValueError(
+                f'Cartesian command step {amplitude:.6f} degrees is below this session minimum '
+                f'{self.minimum_cartesian_command_step_deg:g}; stationary hold retained. '
+                'Reassess geometry; do not automatically enlarge or accumulate rejected steps')
+
     def _trajectory_inputs(self, plan):
         points = np.degrees(plan['joint_positions_rad']).tolist()
         args = {'observation_id': self.observation['observation_id'] if self.observation else '',
@@ -429,6 +510,8 @@ class R5PolicyBackend:
             raise ValueError('Robot changed during Cartesian planning; replan from fresh state')
         if max(abs(a-b) for a, b in zip(start, state['command_deg'])) > .05:
             raise ValueError('Held command differs from path start; cannot jump to the measured pose')
+        amplitude = max(abs(a-b) for a, b in zip(points[-1], start))
+        self._validate_cartesian_amplitude(amplitude)
         PolicyTrajectory(start, points, plan['relative_times_s'],
                          state['lower_deg'], state['upper_deg'], self.clock())
         preview_trajectory(self.guard, state, points)

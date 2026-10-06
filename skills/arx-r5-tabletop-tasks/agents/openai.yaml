@@ -1,0 +1,4 @@
+interface:
+  display_name: "ARX R5 桌面任务验证"
+  short_description: "复用九项桌面任务经验，统一三路录像、观察辅助、回位核验和实验资源记录"
+  default_prompt: "使用 $arx-r5-tabletop-tasks 执行本轮指定的桌面任务，录制三路 MP4，验证放置与回位，并保存实验 MD 及可取得的资源耗时记录。"

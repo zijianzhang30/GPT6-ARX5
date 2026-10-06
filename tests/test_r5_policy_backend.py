@@ -1,4 +1,5 @@
 import copy
+import json
 import math
 import unittest
 from unittest.mock import patch
@@ -193,6 +194,23 @@ class R5BackendTests(unittest.TestCase):
         self.assertAlmostEqual(result["submitted_gripper_raw"], 4.4)
         self.assertAlmostEqual(result["measured_gripper_raw"], 4.3)
         self.assertEqual(result["submitted_joints_deg"], [0, 20, 30, -15, 0, 0])
+
+    def test_successful_settle_feedback_records_actual_checks_and_parameters(self):
+        self.backend.execute('move_joints', self.action())
+        feedback = json.loads(json.dumps(self.backend.last_execution_feedback, allow_nan=False))
+        self.assertTrue(all(feedback['samples'][-1]['checks'].values()))
+        self.assertFalse(feedback['samples'][0]['checks']['arm_ok'])
+        self.assertEqual(feedback['settle_parameters']['min_progress'], .7)
+        self.assertAlmostEqual(feedback['deadline_at_s']-feedback['started_at_s'], 5.)
+
+    def test_settle_feedback_is_reset_before_first_health_check(self):
+        self.backend.last_execution_feedback = {'samples': ['old attempt']}
+        with patch.object(self.backend, 'check', side_effect=R5ExecutionFault('health fault')):
+            with self.assertRaisesRegex(R5ExecutionFault, 'health fault'):
+                self.backend._settle(self.client.state(), {'gripper_raw': 3.3})
+        self.assertEqual(self.backend.last_execution_feedback['samples'], [])
+        self.assertEqual(self.backend.last_execution_feedback['target'], {'gripper_raw': 3.3})
+        self.assertEqual(self.client.commands, [])
 
     def test_relative_step_anchors_to_observation_and_reports_measured_delta(self):
         observed = self.backend.state()
@@ -419,6 +437,12 @@ class R5BackendTests(unittest.TestCase):
         with self.assertRaisesRegex(R5ExecutionFault, 'gripper_target_raw=3.3'):
             self.backend.execute('set_gripper', args)
         self.assertEqual(self.client.commands[-1][0], 'stop')
+        feedback = json.loads(json.dumps(self.backend.last_execution_feedback, allow_nan=False))
+        self.assertGreater(len(feedback['samples']), 5)
+        self.assertLessEqual(len(feedback['samples']), 120)
+        self.assertEqual(feedback['samples'][-1]['checks'],
+                         {'arm_ok': True, 'command_ok': True, 'grip_ok': False})
+        self.assertFalse(self.client.current['enabled'])
 
     def test_large_gripper_close_is_one_exact_target_and_no_joint_target(self):
         args = self.action('set_gripper')

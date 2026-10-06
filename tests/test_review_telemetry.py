@@ -10,6 +10,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 from review_telemetry import ReviewTimer, review_packet
+from r5_policy_backend import R5ExecutionFault, R5PoweredHoldFault
 
 
 def arm_state(side='left'):
@@ -76,7 +77,8 @@ class ReviewTelemetryTests(unittest.TestCase):
 
 class ReviewHostSmokeTests(unittest.TestCase):
     """Run the actual stdin dispatch loop with fake hardware and cameras."""
-    def run_host(self, commands, *, motion_fault=False, working_arm=None):
+    def run_host(self, commands, *, motion_fault=False, working_arm=None, feedback=None,
+                 return_handler=None, arrival_hold=False):
         spec = importlib.util.spec_from_file_location('review_host_under_test',
             Path(__file__).resolve().parents[1]/'tools/held_policy_review.py')
         host = importlib.util.module_from_spec(spec)
@@ -104,6 +106,8 @@ class ReviewHostSmokeTests(unittest.TestCase):
             robot.operation_lock = nullcontext()
             robot.robots = {side: Mock() for side in ('left', 'right')}
             for side, arm in robot.robots.items():
+                arm.backend.last_execution_feedback = copy.deepcopy((feedback or {}).get(side))
+                arm.backend.fault_hold_failure = None
                 arm.backend._read.return_value = arm_state(side)['raw_state']
                 arm.backend.state.return_value = arm_state(side)
                 arm.renew_session.return_value = {'renewed': True}
@@ -111,25 +115,42 @@ class ReviewHostSmokeTests(unittest.TestCase):
             robot.renew_session.return_value = {'renewed': True}
             robot.execute.return_value = {'arms': {}, 'trajectories': {}, 'collision_checked': False}
             if motion_fault:
-                robot.execute.side_effect = RuntimeError('simulated execution failure')
+                fault = (motion_fault if isinstance(motion_fault, BaseException)
+                         else RuntimeError('simulated execution failure'))
+                robot.execute.side_effect = fault
             supervisor = Mock()
+            individual = Mock()
+            individual.diagnostics.return_value = {'fault': None, 'stall': None}
             command_queue = Mock()
             command_queue.get.side_effect = [*commands, KeyboardInterrupt('test-end')]
             argv = ['held_policy_review.py', '--prepare-idle', '--output', str(output),
                     '--paired-client', 'test-owner']
             if working_arm:
                 argv += ['--working-arm', working_arm]
+            if arrival_hold:
+                argv += ['--retain-settle-fault-hold']
+                robot.retain_stationary_faults.return_value = {
+                    side: arm_state(side)['raw_state'] for side in ('left', 'right')}
+            quarantine = host.quarantine_arrival_fault
+            def run_quarantine(*args):
+                return quarantine(*args, sleep=Mock(
+                    side_effect=R5ExecutionFault('fixture quarantine health failure')))
+            sleep_context = (patch.object(host, 'quarantine_arrival_fault', side_effect=run_quarantine)
+                             if arrival_hold else nullcontext())
+            return_factory = (host.ReviewedReturn if return_handler is None
+                              else Mock(return_value=return_handler))
             with patch.multiple(host, ROOT=root,
                     ArmWorkbenchClient=client_factory, prepare_hold=prepare,
                     R5DualCameras=Mock(), SupervisedCameras=Mock(return_value=cameras),
                     CartesianBackend=Mock(side_effect=list(robot.robots.values())),
-                    R5PolicyBackend=Mock(), R5PolicySupervisor=Mock(), return_plan=Mock(return_value=None),
+                    R5PolicyBackend=Mock(), R5PolicySupervisor=Mock(return_value=individual), return_plan=Mock(return_value=None),
+                    ReviewedReturn=return_factory,
                     DualCartesianBackend=Mock(return_value=robot),
                     DualSupervisor=Mock(return_value=supervisor)), \
                  patch.object(host.queue, 'Queue', return_value=command_queue), \
                  patch.object(host.threading, 'Thread'), \
-                 patch.object(host.sys, 'argv', argv), patch('sys.stdout', new_callable=io.StringIO):
-                expected = RuntimeError if motion_fault else KeyboardInterrupt
+                 patch.object(host.sys, 'argv', argv), patch('sys.stdout', new_callable=io.StringIO), sleep_context:
+                expected = R5ExecutionFault if arrival_hold else type(fault) if motion_fault else KeyboardInterrupt
                 with self.assertRaises(expected):
                     host.main()
             events = [json.loads(x) for x in (output/'events.jsonl').read_text().splitlines()]
@@ -140,6 +161,22 @@ class ReviewHostSmokeTests(unittest.TestCase):
             supervisor.close.assert_called_once()
             cameras.close.assert_called_once()
             return events, packet, timing, robot
+
+    def test_arrival_fault_enters_quarantine_without_dispatching_queued_action(self):
+        command = json.dumps({'tool': 'move_to', 'arguments': {
+            'target': {'left': {'pose_xyzquat': [0, 0, .2, 0, 0, 0, 1]}, 'right': None},
+            'note': 'Offline left-only arrival fault'}})
+        events, _, timing, robot = self.run_host(
+            [command, 'renew', command], working_arm='left', arrival_hold=True,
+            motion_fault=R5PoweredHoldFault('Action did not settle'))
+        self.assertEqual(timing['outcome'], 'failed')
+        self.assertEqual(events[-2]['event'], 'arrival_fault_hold')
+        self.assertEqual(events[-1]['event'], 'arrival_fault_hold_ended')
+        self.assertTrue(events[-2]['new_commands_blocked'])
+        self.assertFalse(events[-2]['task_completion_verified'])
+        robot.execute.assert_called_once()
+        robot.renew_session.assert_not_called()
+        robot.retain_stationary_faults.assert_called_once()
 
     def test_first_command_observe_rejection_renew_and_motion_complete(self):
         command = json.dumps({'tool': 'move_to', 'arguments': {'target': {}, 'note': 'test'}})
@@ -160,6 +197,23 @@ class ReviewHostSmokeTests(unittest.TestCase):
         self.assertEqual(events[-1]['exception_type'], 'RuntimeError')
         robot.execute.assert_called_once()
 
+    def test_motion_fault_persists_feedback_and_still_terminates(self):
+        command = json.dumps({'tool': 'move_to', 'arguments': {}})
+        feedback = {'left': {'target': {'joints_deg': [1.]*6},
+                            'samples': [{'at_s': 100., 'joints_deg': [.5]*6,
+                                         'checks': {'arm_ok': False, 'command_ok': True,
+                                                    'grip_ok': True}}]},
+                    'right': None}
+        events, packet, timing, robot = self.run_host(
+            [command], motion_fault=R5ExecutionFault('Action did not settle'), feedback=feedback)
+        self.assertEqual(timing['outcome'], 'failed')
+        self.assertEqual(events[-1]['event'], 'host_terminated')
+        self.assertEqual(events[-1]['exception_type'], 'R5ExecutionFault')
+        self.assertEqual(events[-1]['last_execution_feedback'], feedback)
+        self.assertFalse(any(e['event'] == 'host_quarantined' for e in events))
+        self.assertFalse(events[-1]['task_completion_verified'])
+        robot.execute.assert_called_once()
+
     def test_single_arm_mode_switch_renew_and_return_in_real_dispatch_loop(self):
         def motion(side):
             return json.dumps({'tool': 'move_to', 'arguments': {
@@ -176,6 +230,34 @@ class ReviewHostSmokeTests(unittest.TestCase):
         robot.renew_session.assert_not_called()
         robot.robots['left'].renew_session.assert_called_once()
         robot.robots['right'].renew_session.assert_not_called()
+
+    def test_reviewed_return_dispatches_one_selected_segment_and_records_it(self):
+        review = {'observation_id': 'left-fresh', 'empty_gripper': True, 'path_clear': True,
+                  'recording_active': True, 'note': 'Reviewed fixture'}
+        handler = Mock()
+        handler.step.return_value = {'arm': 'left', 'at_initial': False, 'control_state': 'holding'}
+        events, packet, timing, robot = self.run_host(
+            ['reviewed-return-step '+json.dumps(review)], working_arm='left', return_handler=handler)
+        handler.step.assert_called_once_with(robot, 'left', review)
+        self.assertEqual(timing['outcome'], 'completed')
+        recorded = [e for e in events if e['event'] == 'reviewed_return_step']
+        self.assertEqual(len(recorded), 1)
+        self.assertFalse(recorded[0]['at_initial'])
+        robot.execute.assert_not_called()
+
+    def test_reviewed_return_needs_working_arm_and_failure_uses_original_cleanup(self):
+        command = 'reviewed-return-step {}'
+        handler = Mock()
+        events, packet, timing, robot = self.run_host([command], return_handler=handler)
+        self.assertEqual(timing['outcome'], 'rejected')
+        handler.step.assert_not_called()
+        fault = R5ExecutionFault('Return feedback lost')
+        handler.step.side_effect = fault
+        events, packet, timing, robot = self.run_host(
+            [command], working_arm='left', return_handler=handler, motion_fault=fault)
+        self.assertEqual(timing['outcome'], 'failed')
+        self.assertEqual(events[-1]['event'], 'host_terminated')
+        handler.step.assert_called_once()
 
 
 if __name__ == '__main__':

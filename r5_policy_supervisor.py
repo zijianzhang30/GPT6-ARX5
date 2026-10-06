@@ -11,7 +11,7 @@ import time
 import traceback
 from collections import deque
 
-from r5_policy_backend import R5ExecutionFault
+from r5_policy_backend import R5ExecutionFault, R5PoweredHoldFault
 from motion_safety import finite
 
 
@@ -145,7 +145,16 @@ class R5PolicySupervisor:
 
     def _check_robot(self):
         self.check_started_at = time.monotonic()
-        self.robot.check()
+        from fault_powered_hold import FaultHold
+        try:
+            if isinstance(getattr(self.robot, 'fault_hold', None), FaultHold):
+                self.robot.supervise()
+            else:
+                self.robot.check()
+        except R5PoweredHoldFault:
+            # The arrival thread can latch between dispatch and acquiring its
+            # command lock. That transition must not kill the heartbeat worker.
+            self.robot.supervise()
         finished = time.monotonic()
         self.check_samples.append({'started_at': self.check_started_at,
                                    'duration_s': finished-self.check_started_at})

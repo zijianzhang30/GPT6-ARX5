@@ -137,6 +137,11 @@ class CameraRouter:
 
 class RecordingWorkbench(ThreadingHTTPServer):
     daemon_threads = True
+    # Three camera readers, recording and both arm watchdogs open independent
+    # short HTTP connections. The default backlog of 5 drops simultaneous
+    # connects before handlers run, even when each handler is fast. Leave all
+    # request/watchdog deadlines unchanged; admit these bounded local bursts.
+    request_queue_size = 64
 
     def __init__(self, address, upstream, directory, right_upstream=None, paired_policy_client=None):
         if right_upstream and right_upstream.rstrip('/') == upstream.rstrip('/'):

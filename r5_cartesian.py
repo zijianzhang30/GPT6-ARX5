@@ -214,6 +214,12 @@ class CartesianBackend:
         if self.backend._read().get('policy_trajectory_protocol') != PolicyTrajectory.protocol:
             self.backend.abort('Workbench lacks timed Cartesian trajectory transport')
 
+    def supervise(self):
+        state = self.backend.supervise()
+        if state.get('policy_trajectory_protocol') != PolicyTrajectory.protocol:
+            self.backend.abort('Workbench lacks timed Cartesian trajectory transport')
+        return state
+
     def state(self):
         state = self.backend.state()
         pose = self.frames.sdk_to_tcp(self.solver.forward_kinematics(state['joint_positions_rad']))
