@@ -27,7 +27,7 @@
 
 1. 先只读核验当前保持宿主、owner、SDK状态和`ip -details -statistics link show`。健康保持直接复用，不因“每次启动”而关闭或重复使能。
 2. 用`/dev/serial/by-id/`当前对调后的固定序列号核对左`2088335E5931 → can0`、右`208833765931 → can1`；`ttyACM*`编号可变。接口缺失时结合内核USB日志检查是否刚发生重新枚举。
-3. 仅在对应侧已失能、无owner且故障SDK已退出时恢复桥接。当前对调接线应按[初始化手册](/home/tuojing/arx_r5_control/MACHINE_INITIALIZATION_RUNBOOK.md)顶部的已核验序列号流程处理。项目原`restore_can.sh`绑定的是对调前的左适配器，不能在当前映射下直接用于左`can0`；脚本拒绝时先查原因，不绕过。桥接恢复不初始化SDK。
+3. 仅在对应侧已失能、无owner且故障SDK已退出时恢复桥接。当前对调接线应按[初始化手册](/home/tuojing/arx_r5_control/MACHINE_INITIALIZATION_RUNBOOK.md)顶部的已核验序列号流程处理。本机`/home/tuojing/arx_r5_control`中的`restore_can.sh`、`rebuild_left_can_bridge.py`和`restart_left_can_bridge.py`已于2026-10-12更新为当前左适配器`2088335E5931`。这是本机修复记录；当前Git检出中的脚本可能仍为旧版，运行前必须核对源码中的序列号与实时身份，不能仅凭本说明认为脚本已同步。脚本拒绝时先查原因，不绕过。桥接恢复不初始化SDK。
 4. 核验对应接口已恢复、另一侧未受影响。满足本次清场条件并确认三路录像正常后，逐侧经原上游接口连接SDK（可能初始化回零），等待`ready`、六个有限关节值、空错误码及新鲜且增长的RX全部成立，再由唯一受监督宿主使能。已有有效清场确认不重复索取。
 5. 保存初态、回位参考和恢复日志；准备恢复与任务动作、耗时分别记。仍无反馈时停止重复初始化，依据新的电源/接线/USB状态排查，不能循环“重新使能”。
 

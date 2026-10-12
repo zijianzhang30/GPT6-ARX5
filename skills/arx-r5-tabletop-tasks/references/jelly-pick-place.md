@@ -34,3 +34,17 @@
 - [完整记录](/home/tuojing/arx_r5_control/analysis/jelly_pick_place_trial01_20261005/RUN_RECORD.md)
 - [回位核验](/home/tuojing/arx_r5_control/analysis/jelly_pick_place_trial01_20261005/return_verification.json)
 - [资源耗时](/home/tuojing/arx_r5_control/analysis/jelly_pick_place_trial01_20261005/PERFORMANCE.md)
+
+
+## 2026-10-12 新协议第1轮证据
+
+包装果冻杯、绿色盒支撑、橘子原始回位参考：前两次局部夹取失败，第一次松爪后杯子侧倒；调整为向下接近并确认夹面间隙后，第3次成功。接触包含杯肩/口沿附近与对侧白色杯身，不是纯中部对夹，不将勾膜等同抓稳。反馈FK净抬升约5.8厘米，放回原盒面并侧放、完全松爪撤离后两次独立稳定通过；未恢复初始竖放，未做密封或夹持力测试。右臂只原位观察。双臂原2.5°回位两次通过，未观察到两臂碰撞。
+
+三路69个MP4封存，全部片段元数据/首末帧通过；三处录制间隔与缺采样保留，末处缺录含一次健康renew，不能声称全程录像。准备时两次左SDK无回包，修正当前左5E5931桥接映射并由用户本机sudo重建后恢复；并未证明所有底层通信故障的根因。
+
+经验只用于判断：先确认杯身与两指有效接触和离面间隙，位置开度不是力；侧倒后重看新几何，不重放本轮坐标/开度。统计净抬升须以同一实际反馈口径区分姿态调整和累计指令。renew前也核验三路录像；录像重启时用新进程自己的计数基线验证增长，保留旧记录，不放宽检查。
+
+证据：[实验报告](/home/tuojing/arx_r5_control/JELLY_GRASP_EXPERIMENT_RECORD_20261012_TRIAL01.md)、[录像说明](/home/tuojing/arx_r5_control/analysis/jelly_grasp_trial01_20261012/VIDEO_RECORD.md)、[抬升与接触边界](/home/tuojing/arx_r5_control/analysis/jelly_grasp_trial01_20261012/grasp_lift_evidence/milestones.json)。旧2026-10-05软果冻失败保留，不混算。
+
+
+后续已按用户要求另存[90秒三路同屏倍速视频](/home/tuojing/arx_r5_control/exports/jelly_grasp_trial01_20261012_90s/jelly_grasp_trial01_full_3view_90s.mp4)：90.000秒、约16.32倍速，2700帧全解码和三路采样对齐验证通过，覆盖69个原始片段；三处缺录保留提示。视频及原始证据位于本机，不随技能上传Git仓库。

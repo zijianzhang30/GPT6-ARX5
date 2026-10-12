@@ -1,0 +1,4 @@
+interface:
+  display_name: "夹取果冻"
+  short_description: "沿用橘子流程执行果冻抓放，核验双臂间隙并保存三路录像与实验记录"
+  default_prompt: "使用 $jelly-grasp 完成一轮夹取果冻：恢复橘子初始位姿，左臂抓起并抬升5–20厘米后放回，右臂按需观察，核验双臂间隙并记录三路视频与实验Markdown。"
