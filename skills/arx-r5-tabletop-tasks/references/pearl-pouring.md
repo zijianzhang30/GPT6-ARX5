@@ -1,5 +1,7 @@
 # 杯间倒珍珠：第7项
 
+> **执行前提：左右 CAN 已交换（2026-10-11 用户确认）。** 物理左臂使用 `2088335E5931 → can0 → 8765`；物理右臂使用 `208833765931 → can1 → 8766`。左右任务角色及腕部相机归属不交换。每次先核对当前接线、实时反馈和唯一保持宿主；旧序列号映射及硬编码恢复脚本不能直接套用。详见[统一 CAN 前提](can-mapping.md)。
+
 2026-10-05 第1轮：左臂从桌面抓源杯并倾倒，右臂辅助观察；用户验收成功，允许杯底残留。抓杯、受控放回及双臂回位有独立证据；发生洒落，接收数量未独立确认。分类尚未指定，不自动归入 L1/L2。
 
 ## 可复用的操作判断
@@ -30,3 +32,13 @@
 - [三路原始 MP4](/home/tuojing/arx_r5_control/analysis/pearl_pouring_trial01_20261005/recording02)
 - [回位核验](/home/tuojing/arx_r5_control/analysis/pearl_pouring_trial01_20261005/return_verification.json)
 - [用量与计时口径](/home/tuojing/arx_r5_control/analysis/pearl_pouring_trial01_20261005/PERFORMANCE.md)
+
+## 2026-10-11 第2轮补测
+
+原任务初始位姿两次核验通过。第一次局部抓杯试提成立，分段倾倒后源杯目视空、接收杯内有绿色小球；未见桌面洒落但未独立计数，不能宣称全部零损失转移。出料期间接收杯有小幅位移，原因未确定，未继续加倾角，先抬离再侧移并确认接收杯未跟随。两臂轮流运动，右臂仅抬高近本侧观察；未观察到双臂碰撞，不将IK通过当碰撞证明。
+
+用户在空杯扶正下放阶段要求停止录制：17:06:42三路正常停止，暂停后续动作并保留健康持杯保持。杯子未释放、独立稳定与最终双臂回位未验证，完整流程未完成。不能将本轮倾倒视觉结果写成全流程成功，也不能将杯子接近桌面当释放成功。
+
+证据：[第2轮实验记录](/home/tuojing/arx_r5_control/PEARL_POURING_EXPERIMENT_RECORD_20261011_TRIAL02.md)，[原速三路](/home/tuojing/arx_r5_control/analysis/pearl_pouring_trial02_20261011/videos/)，[90秒三视角浏览](/home/tuojing/arx_r5_control/exports/pearl_pouring_trial02_20261011_90s/pearl_pouring_trial02_full_3view_90s.mp4)。原片81段，少量缺采样/重复帧原样保留；具体数量与资源口径见该轮文档。
+
+第2轮17:16收尾更新：用户要求导出后续行、回位不录像。源杯释放及侧向撤离后独立稳定两次通过；人工移杯换下一任务道具后重新清场，最终双臂受控回原参考两次通过（原2.5°）。90秒视频只覆盖首次停录前，后续证据见该轮final_return_after_video；接收数量未核验仍保留。

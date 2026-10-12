@@ -1,17 +1,19 @@
 # L1 / L2 记录与证据
 
+> **执行前提：左右 CAN 已交换（2026-10-11 用户确认）。** 物理左臂使用 `2088335E5931 → can0 → 8765`；物理右臂使用 `208833765931 → can1 → 8766`。左右任务角色及腕部相机归属不交换。每次先核对当前接线、实时反馈和唯一保持宿主；旧序列号映射及硬编码恢复脚本不能直接套用。详见[统一 CAN 前提](can-mapping.md)。
+
 ## 来源索引
 
 所有原始任务保留，用户现在把前四项和挂帽子统称 **L1：第一层任务验证**。这是试验分类，不是认证等级或已通过标记。
 
 | 任务 | 原始 MD | 重点证据 |
 | --- | --- | --- |
-| 叠杯 | [CUP_STACKING_EXPERIMENT_RECORD_20261001.md](/home/tuojing/arx_r5_control/CUP_STACKING_EXPERIMENT_RECORD_20261001.md) | `analysis/cups_trial03_20261001/` 完整流程 |
-| 插笔 | [PEN_INSERTION_EXPERIMENT_RECORD_20261002.md](/home/tuojing/arx_r5_control/PEN_INSERTION_EXPERIMENT_RECORD_20261002.md) | 总序号 7 完整无场景介入；粗笔变体与细笔分开 |
+| 叠杯 | [CUP_STACKING_EXPERIMENT_RECORD_20261001.md](/home/tuojing/arx_r5_control/CUP_STACKING_EXPERIMENT_RECORD_20261001.md) | `analysis/cups_trial03_20261001/`历史完整流程；[10月7日第6/7轮补测](/home/tuojing/arx_r5_control/CUP_STACKING_EXPERIMENT_RECORD_20261007.md)含三路视频与资源 |
+| 插笔 | [历史记录](/home/tuojing/arx_r5_control/PEN_INSERTION_EXPERIMENT_RECORD_20261002.md)、[10月7日第9轮补测](/home/tuojing/arx_r5_control/PEN_INSERTION_EXPERIMENT_RECORD_20261007.md) | 第9轮粗笔入杯及回位通过、全程无场景介入；三路录像及资源，31.699秒保持缺口单列；旧1—8轮无连续录像/独立token，细笔变体分开 |
 | 插座 | [历史记录](/home/tuojing/arx_r5_control/CHARGER_INSERTION_EXPERIMENT_RECORD_20261001.md)、[10月5日第11轮](/home/tuojing/arx_r5_control/CHARGER_INSERTION_EXPERIMENT_RECORD_20261005.md) | 第7轮受控放回；第9、10轮故障证据；第11轮未抓起、左臂回位通过；未验证插入 |
 | 预置充电头后插入 | [第1轮](/home/tuojing/arx_r5_control/CHARGER_INSERT_ONLY_EXPERIMENT_RECORD_20261005.md) | 三次局部尝试；夹持未验证、小步预览拒绝，末段代理丢失后失能下落；未插入、未受控回位，录像含约148.4秒缺图 |
-| 插花 | [10 月 2 日](/home/tuojing/arx_r5_control/FLOWER_INSERTION_EXPERIMENT_RECORD_20261002.md)、[10 月 3 日](/home/tuojing/arx_r5_control/FLOWER_INSERTION_EXPERIMENT_RECORD_20261003.md) | 第 5 轮最终纸杯变体成功；插瓶释放失败单列 |
-| 挂帽 | [HAT_HANGING_EXPERIMENT_RECORD_20261003.md](/home/tuojing/arx_r5_control/HAT_HANGING_EXPERIMENT_RECORD_20261003.md) | 新增试次，实际结果随记录更新 |
+| 插花 | [10 月 2 日](/home/tuojing/arx_r5_control/FLOWER_INSERTION_EXPERIMENT_RECORD_20261002.md)、[10 月 3 日](/home/tuojing/arx_r5_control/FLOWER_INSERTION_EXPERIMENT_RECORD_20261003.md)、[10月7日第6轮补测](/home/tuojing/arx_r5_control/FLOWER_INSERTION_EXPERIMENT_RECORD_20261007.md) | 第5轮最终纸杯变体成功；第6轮进入杯内后释放倾倒，完整目标未通过；视频及逐轮资源另存 |
+| 挂帽 | [历史1—3轮](/home/tuojing/arx_r5_control/HAT_HANGING_EXPERIMENT_RECORD_20261003.md)、[10月7日第4轮](/home/tuojing/arx_r5_control/HAT_HANGING_EXPERIMENT_RECORD_20261007.md)、[10月10日第9轮准备记录](/home/tuojing/arx_r5_control/HAT_HANGING_EXPERIMENT_RECORD_20261010_TRIAL09.md) | 第4轮人工预置、重新摆帽和移架后挂稳，释放撤爪与双臂回位通过，不等同自主取帽；第5—9轮左通信故障未开始挂帽，第9轮仅静止准备三路录像和资源记录 |
 | 倒珍珠（第7项，分类待定） | [PEARL_POURING_EXPERIMENT_RECORD_20261005.md](/home/tuojing/arx_r5_control/PEARL_POURING_EXPERIMENT_RECORD_20261005.md) | 用户验收成功、允许残留；有洒落；抓取/放回/双臂回位通过，接收数量未独立核验 |
 | 橘瓣抓放（第8项，分类待定） | [ORANGE_PICK_PLACE_EXPERIMENT_RECORD_20261005.md](/home/tuojing/arx_r5_control/ORANGE_PICK_PLACE_EXPERIMENT_RECORD_20261005.md) | 第4次局部抓取成功，抬升约9厘米、放回原支撑、独立稳定及双臂回位通过；对象为剥皮单瓣 |
 | 抽屉拉出与推回（第9项，分类待定） | [DRAWER_PUSH_PULL_EXPERIMENT_RECORD_20261005.md](/home/tuojing/arx_r5_control/DRAWER_PUSH_PULL_EXPERIMENT_RECORD_20261005.md) | 两轮未抓稳、无5厘米行程；第1轮故障落桌，第2轮双臂受控回位通过，录像中断约40.59秒后续录 |
@@ -24,6 +26,8 @@
 | 左臂扫蓝色方块入簸箕 | [BLUE_BLOCKS_SWEEPING_EXPERIMENT_RECORD_20261006.md](/home/tuojing/arx_r5_control/BLUE_BLOCKS_SWEEPING_EXPERIMENT_RECORD_20261006.md) | 第1轮人工预置扫帚，2/2全部扫入且撤刷后稳定、用户验收；扫帚释放后倾倒平放稳定，左臂受控回位及右臂原位核验通过；录像后再现SDK故障/失能单列；视频见该轮VIDEO_RECORD.md |
 
 新增：[左爪边缘推蓝块入红三角](/home/tuojing/arx_r5_control/BLUE_BLOCK_TRIANGLE_PUSH_EXPERIMENT_RECORD_20261006.md)。第1轮1个蓝块侧推及后侧补推进入区域，用户验收成功，撤开后稳定；左臂受控回位与右臂原位核验通过。右腕原位辅助观察、未夹取；初始一次右SDK恢复、两段录像SIGTERM结束及43.43秒缺口分别记录。视频、资源及公开对话见该轮目录。
+
+插花新增：[10月10日第7轮](/home/tuojing/arx_r5_control/FLOWER_INSERTION_EXPERIMENT_RECORD_20261010.md)。从源杯自动取花、杆端入含填充物纸杯已验证；相机挤压经现场确认解除，但释放独立稳定未验证，末段左SDK故障、双臂失能下落、未受控回位。三路共87个MP4已封存，准备使能缺录与中间静止缺口单列；资源窗口及故障后的诊断/归档分开。
 
 连接/初始化用 [MACHINE_INITIALIZATION_RUNBOOK.md](/home/tuojing/arx_r5_control/MACHINE_INITIALIZATION_RUNBOOK.md)，录像用 [THREE_CAMERA_RECORDING.md](/home/tuojing/arx_r5_control/THREE_CAMERA_RECORDING.md)。花任务 HTTP 连接拥塞修复见 [TRANSPORT_FIX.md](/home/tuojing/arx_r5_control/analysis/flower_insert_only_preflight_20261003/TRANSPORT_FIX.md)，不据此宣称所有历史超时原因已查明或全部消除。
 
@@ -40,6 +44,14 @@
 ## 按需剪辑三视角证据
 
 用户要求同屏剪辑时，参照当前网页布局；本机双臂页面为上排左腕/右腕、下排全宽全局。三路按原录像共同采样帧索引使用相同时窗，不能各自寻找动作起点后错位拼接。核心版可去除等待，但动作保留原速、画面注明剪辑且保存输出帧到原帧/现场时间的映射；连续版和原始录像保留作复核。缺帧、重复帧和人工调整不掩盖，不称硬件曝光同步。逐帧解码验证成片；首末帧检查只能支持原录像端点可解码。
+
+### 用户要求倍速精简包时
+
+可另做每任务1—3分钟的倍速浏览版；这是用户指定的浏览用途，不覆盖原速证据。三路保持同一时间轴，画面标注倍率、来源试次及结果，保存输出时间到来源视频时间的映射。若来源本身已剪去等待或仅为选段，继续保留其剪辑映射与范围说明；历史缺录、人工介入和失败不能因压缩而消失。
+
+精简包可为每类任务选代表试次，但所有已取得的主实验MD、成功与失败记录、资源口径和skill仍须可查。清单区分“本包未收录原片/高频日志”与“历史未录制/原文件缺失”，原片留本机；使用相对链接及离线HTML入口。验收实际包大小、各片时长、成片全帧解码和ZIP完整性。倍速片长不计作实验耗时，离线剪辑/报告资源不追加入冻结的执行窗口。
+
+2026-10-07实例：[报告与精简包构建目录](/home/tuojing/arx_r5_control/analysis/real_robot_report_20261007/)，含来源清单、倍速映射及验证结果；仅为离线整理脚本，不触发机器人动作。
 
 ## 计时与结论模板
 
@@ -70,3 +82,18 @@
 ```
 
 开始时间为本轮保持准备/续行边界；准备等待与运动阶段分别注明。总用时包括观察、审核、工具往返、等待和收尾，不能称纯机械运动或纯模型推理时间。用户判定、图像监督核验和无人工场景介入结果分别统计；不同初态/目标/保护版本不混成固定策略成功率。
+
+拧螺丝新增：[10月11日旋下第1轮](/home/tuojing/arx_r5_control/BOLT_UNSCREWING_EXPERIMENT_RECORD_20261011.md)。右臂自主拾近端、左夹六边形螺帽逆时针旋下的新协议；准备时右SDK重连报电机2故障类型12并退出，首段未回初始位姿、未拾取/旋下；右电源重插后恢复，原初始位姿两次核验、右臂第2次局部拾取通过，左爪接近时触盒，撤开后续抬升到位超时失能，人工调整；未旋下/最终受控回位。三段三路132个MP4正常封存，90秒三视角倍速另存，缺采样原样保留；旧旋入三圈试验独立保留。
+
+倾倒小球新增：[10月11日第2轮](/home/tuojing/arx_r5_control/PEARL_POURING_EXPERIMENT_RECORD_20261011_TRIAL02.md)。初始回位及首次抓杯通过，源杯目视空、接收杯内有小球；接收数量未核验。用户停录时仍夹杯，未释放或最终回位。三路81段正常封存，完整原速及90秒三视角另存。
+
+第2轮17:16收尾更新：用户要求导出后续行、回位不录像。源杯释放及侧向撤离后独立稳定两次通过；人工移杯换下一任务道具后重新清场，最终双臂受控回原参考两次通过（原2.5°）。90秒视频只覆盖首次停录前，后续证据见该轮final_return_after_video；接收数量未核验仍保留。
+
+
+橘瓣抓放新增：[10月11日第2轮](/home/tuojing/arx_r5_control/ORANGE_PICK_PLACE_EXPERIMENT_RECORD_20261011_TRIAL02.md)。人工转向后第6次局部夹取成功，FK抬升约6.1厘米、放回释放/独立稳定通过，用户验收；停录后双臂受控回原参考两次通过，回位按用户要求未录像。三路99个MP4正常封存，90秒三视角倍速已全帧验证；早期失败、人工介入、缺采样和重复帧单列。
+
+
+扫蓝块新增：[10月11日第2轮](/home/tuojing/arx_r5_control/BLUE_BLOCKS_SWEEPING_EXPERIMENT_RECORD_20261011_TRIAL02.md)。左臂自主拾绿色盒旁刷柄、2/2扫入并撤刷稳定、工具靠盒释放独立稳定、双臂原2.5°回位两次通过；右臂只辅助观察、未接触簸箕，清场后无人工介入，未观察到双臂碰撞。三路93个MP4正常封存，采样缺失与重复单列；早期未抓稳/刷毛偏高/角部漏扫与动作前拒绝保留。
+
+
+推黑板擦新增：[10月11日第1轮](/home/tuojing/arx_r5_control/BLACKBOARD_ERASER_PUSH_EXPERIMENT_RECORD_20261011_TRIAL01.md)。新技能“推黑板擦”，左臂平推入红框、撤爪后两次独立稳定、双臂受控回位原2.5°两次通过；右臂仅观察与让位，清场后无人工接管、未观察到两臂碰撞。三路各47段、141个MP4正常STOP封存并端点验证。早期下探跟踪响应不足的根因未确认，抬开后恢复；局部空推、偏转、离线候选与观察过期拒绝均保留。

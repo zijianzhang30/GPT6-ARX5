@@ -1,0 +1,4 @@
+interface:
+  display_name: "推黑板擦"
+  short_description: "左臂推黑板擦入红色方格，逐段观察避碰并保存三路视频、实验记录和回位证据"
+  default_prompt: "使用 $push-blackboard-eraser 执行一轮推黑板擦任务：先核验并恢复初始参考，左臂推入红色方格，右臂按需辅助观察，录制三路MP4并保存实验Markdown与回位证据。"
