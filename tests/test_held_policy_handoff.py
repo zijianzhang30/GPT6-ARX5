@@ -42,6 +42,23 @@ class HeldHandoffTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'resumed activity'):
             validate_completed_review(initial, events[:-1]+[{'event': 'request'}, events[-1]])
 
+    def test_completed_return_timing_pair_is_not_resumed_activity(self):
+        initial, saved, events = self.completed_review()
+        begin = {'event': 'review_command_started', 'command': 'return-right-step',
+                 'command_index': 12}
+        end = {'event': 'review_command_finished', 'command': 'return-right-step',
+               'command_index': 12, 'outcome': 'completed'}
+        paired = events[:-2] + [begin, events[-2], events[-1], end, events[-1]]
+        self.assertEqual(validate_completed_review(initial, paired), saved)
+        for bad in (paired[:-2],
+                    paired[:-2] + [{**end, 'command_index': 13}, events[-1]],
+                    paired[:-2] + [{**end, 'outcome': 'rejected'}, events[-1]],
+                    paired[:-3] + [{'event': 'request'}, events[-1], end],
+                    paired + [{'event': 'request'}, events[-1]],
+                    paired + [begin, events[-1], end, events[-1]]):
+            with self.subTest(events=bad), self.assertRaises(ValueError):
+                validate_completed_review(initial, bad)
+
     def test_failed_trial_handoff_requires_matching_recovery_observation_and_unchanged_hold(self):
         import copy
         initial, saved, success_events = self.completed_review()
@@ -63,6 +80,34 @@ class HeldHandoffTests(unittest.TestCase):
         bad[-1]['state']['arms']['left']['raw_state']['joints_deg'] = [3.] * 6
         with self.assertRaises(ValueError):
             validate_completed_review(initial, bad, failed)
+
+    def test_failed_right_trial_accepts_completed_observation_only_after_both_returns(self):
+        import copy
+        initial, saved, success = self.completed_review()
+        prefix = [{**e, 'at_s': float(i + 1)} for i, e in enumerate(success[:3])]
+        observed = {**success[-1], 'at_s': 20.}
+        begin = {'event': 'review_command_started', 'command': 'observe', 'command_index': 7}
+        end = {'event': 'review_command_finished', 'command': 'observe',
+               'command_index': 7, 'outcome': 'completed'}
+        events = prefix + [begin, observed, end]
+        failed = {'status': 'failed_recovered_holding', 'reported_success': False,
+                  'program_verified_success': False, 'both_at_initial_verified': True,
+                  'right_phase_started': True, 'failure_phase': 'right',
+                  'task_failure_at_s': 10., 'recovery_finished_at_s': 20.}
+        self.assertEqual(validate_completed_review(initial, events, failed), saved)
+        for bad in (events[:-1], events[1:], events + [{'event': 'request'}],
+                    prefix + [begin, {'event': 'request'}, observed, end],
+                    prefix + [begin, observed, {**end, 'command_index': 8}],
+                    prefix + [begin, observed, {**end, 'outcome': 'rejected'}],
+                    prefix + [success[3], begin, observed, end]):
+            with self.assertRaises(ValueError):
+                validate_completed_review(initial, bad, failed)
+        for key, value in [('joints_deg', [3.] * 6), ('moving', True),
+                           ('error_codes', [1]), ('gripper_command_raw', 3.)]:
+            bad = copy.deepcopy(events)
+            bad[-2]['state']['arms']['right']['raw_state'][key] = value
+            with self.assertRaises(ValueError):
+                validate_completed_review(initial, bad, failed)
 
     @patch('held_policy_handoff.time.sleep')
     @patch('held_policy_handoff.select.poll')

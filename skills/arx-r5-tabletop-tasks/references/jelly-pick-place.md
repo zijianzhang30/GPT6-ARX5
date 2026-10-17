@@ -48,3 +48,17 @@
 
 
 后续已按用户要求另存[90秒三路同屏倍速视频](/home/tuojing/arx_r5_control/exports/jelly_grasp_trial01_20261012_90s/jelly_grasp_trial01_full_3view_90s.mp4)：90.000秒、约16.32倍速，2700帧全解码和三路采样对齐验证通过，覆盖69个原始片段；三处缺录保留提示。视频及原始证据位于本机，不随技能上传Git仓库。
+
+
+夹取果冻新协议第2轮：[2026-10-12软果冻实验](/home/tuojing/arx_r5_control/JELLY_GRASP_EXPERIMENT_RECORD_20261012_TRIAL02.md)。六次低幅试提未验证离面，按用户要求收至0.15仍滑脱；松爪撤离后物体稳定，双臂原2.5°回位两次通过。三路69个MP4首末帧/帧数通过，末段manifest未完成及用户停录后末段回位无MP4单列；不与包装杯第1轮成功混算。
+
+
+## 2026-10-16 裸果冻抓放第1轮：未抓稳，回位完成
+
+当轮用户明确删除prompt中的cup，目标为左臂抓绿色盒上的裸果冻、抬升5–20厘米、放回释放，右臂可辅助观察。斜向接触、较低主体接触、更接近竖直接触三种方案各两次低幅试提，共六次均未确认稳定离面；最后收到0.18位置开度仍变形并滑回/留在盒面。没有完成5–20厘米抬升，任务记失败。增加闭合或改为竖直均不是本轮验证成功的方法，后续须寻找新的有效接触依据，不能复用固定坐标和开度。近竖直姿态同时要保留J4关节余量，不能为上提突破规划范围。
+
+松爪撤离后果冻独立留在绿色盒上；右臂先收回、左臂随后分段回位，原始参考2.5°两次核验通过。参考继承当日上一轮已核验初态，不是强制恢复旧橘子姿态或改称厂商HOME。未观察到双臂碰撞。开始阶段旧保持宿主静止失能，SDK仍ready且无电机错误；标准保持准备及现有输入交接后恢复，原因未知。不要把fault改成ready，也不要把用户“重新开始”改写为已经回答了所有硬件改动问题。
+
+三路54个MP4正常STOP，每路1060.9秒；全部片段FPS、帧数及首末帧通过，缺采样/重复帧保留，未声称全片逐帧解码。任务35条JSON（21移动、14闭爪），回位9条移动；三次张开另有24个内部目标，口径不能相加为工具调用数。
+
+证据：[本轮完整记录](/home/tuojing/arx_r5_control/analysis/jelly_pick_place_trial01_20261016/EXPERIMENT.md)、[六次试提图像](/home/tuojing/arx_r5_control/analysis/jelly_pick_place_trial01_20261016/milestones.json)、[录像与验证](/home/tuojing/arx_r5_control/analysis/jelly_pick_place_trial01_20261016/VIDEO_RECORD.md)、[回位核验](/home/tuojing/arx_r5_control/analysis/jelly_pick_place_trial01_20261016/return_verified.json)。

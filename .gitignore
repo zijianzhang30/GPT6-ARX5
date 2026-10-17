@@ -3,6 +3,28 @@
 /recordings/
 /Log/
 /robot.log
+/exports/
+
+# Keep recordings, archives, local credentials and generated reports out of commits
+*.mp4
+*.mkv
+*.avi
+*.mov
+*.mcap
+*.bag
+*.tar
+*.tar.gz
+*.tgz
+*.7z
+.env
+.env.*
+!.env.example
+auth.json
+*.pem
+*.key
+/USAGE_SUMMARY.json
+/response_usage.jsonl
+/tool_calls.jsonl
 
 # Local environments and test/browser state
 /.venv-policy/

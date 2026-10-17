@@ -1,12 +1,14 @@
 import copy
 import json
+import os
 from pathlib import Path
 import signal
 import tempfile
 import unittest
 from unittest.mock import Mock, patch
 
-from initial_review_handoff import InitialReviewInputHandoff, validate_initial_review_log
+from initial_review_handoff import (InitialReviewInputHandoff, validate_initial_review_log,
+                                    validate_initial_sequential_log, require_eof_input)
 
 
 class InitialReviewTests(unittest.TestCase):
@@ -41,6 +43,51 @@ class InitialReviewTests(unittest.TestCase):
             es = self.events(); es[-2]['state']['arms']['left']['raw_state'][key] = value
             with self.subTest(key=key), self.assertRaises(ValueError):
                 validate_initial_review_log(es, 'owner', 'right')
+
+    def test_sequential_recovery_preserves_reference_and_rejects_any_input(self):
+        ordinary = self.events()
+        initial = {s: {**a['raw_state'], 'joints_deg': [.1] * 6}
+                   for s, a in ordinary[-2]['state']['arms'].items()}
+        events = ordinary[:2] + [
+            dict(event='planning_configuration', one_arm_at_a_time=False),
+            dict(event='sequential_trial_started', right_blocked=True,
+                 initial_joints_deg={s: a['joints_deg'] for s, a in initial.items()}),
+            ordinary[-2]]
+        self.assertEqual(set(validate_initial_sequential_log(events, 'owner', initial)),
+                         {'left', 'right'})
+        for event in ('request', 'result', 'rejected', 'review_command_started', 'observation'):
+            for i in range(len(events)+1):
+                changed = copy.deepcopy(events); changed.insert(i, dict(event=event))
+                with self.subTest(event=event, i=i), self.assertRaises(ValueError):
+                    validate_initial_sequential_log(changed, 'owner', initial)
+        for side in initial:
+            for key, value in [('joints_deg', [1.]*6), ('owner', 'other'), ('channel', 'other')]:
+                changed = copy.deepcopy(initial); changed[side][key] = value
+                with self.subTest(side=side, key=key), self.assertRaises(ValueError):
+                    validate_initial_sequential_log(events, 'owner', changed)
+        events[-2]['right_blocked'] = False
+        with self.assertRaises(ValueError):
+            validate_initial_sequential_log(events, 'owner', initial)
+
+    def test_input_probe_rejects_live_or_buffered_pipe_without_consuming(self):
+        readfd, writefd = os.pipe()
+        try:
+            path = Path(f'/proc/self/fd/{readfd}')
+            with self.assertRaises(ValueError):
+                require_eof_input(path)
+            os.write(writefd, b'observe\n'); os.close(writefd); writefd = None
+            with self.assertRaises(ValueError):
+                require_eof_input(path)
+            self.assertEqual(os.read(readfd, 8), b'observe\n')
+            require_eof_input(path)
+            require_eof_input(Path('/dev/null'))
+            with tempfile.NamedTemporaryFile() as f:
+                with self.assertRaises(ValueError):
+                    require_eof_input(Path(f.name))
+        finally:
+            os.close(readfd)
+            if writefd is not None:
+                os.close(writefd)
 
     @patch('held_policy_handoff.time.sleep')
     @patch('held_policy_handoff.select.poll')

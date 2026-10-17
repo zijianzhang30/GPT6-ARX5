@@ -1,5 +1,13 @@
 # R5 Studio · 实机控制
 
+## 核心代码与实验统计（2026-10-17 同步）
+
+- [代码入口与依赖说明](docs/CORE_CODE.md)：双臂控制、CAN 恢复、视觉监督、三路录像和任务技能。
+- [token 与调用次数统计](docs/EXPERIMENT_USAGE.md)：离线工具 `tools/collect_experiment_usage.py`，按响应/工具 ID 去重并单列机器人请求。
+- [当前任务技能](skills/arx-r5-tabletop-tasks/SKILL.md)：按任务查阅执行前提和已验证范围。下文保留早期开发记录，历史“尚未验证”描述应结合当前技能阅读。
+
+本次同步仅更新源码、小型配置、测试与技能文档；本机实验录像、原始会话、分析数据、编译产物与凭据不随本次提交上传。技能中的本机证据绝对路径指向实验机器，并不表示这些数据已包含在仓库中。
+
 ## 代码、实验记录与任务 Skill
 
 仓库包含控制程序、测试、实验 Markdown 记录和 HTML 报告。完整的 ARX R5 桌面任务 Skill 位于 [`skills/arx-r5-tabletop-tasks/`](skills/arx-r5-tabletop-tasks/SKILL.md)，包括任务入口、各任务参考指南及 `agents/openai.yaml`。此目录是本机 `/home/tuojing/.codex/skills/arx-r5-tabletop-tasks/` 的版本化副本。

@@ -74,6 +74,17 @@ class Live(unittest.TestCase):
     def test_stale_feedback_blocks_motion(self):
         self.feed(age=1.)
         with self.assertRaises(ValueError):self.cmd(action='enable')
+    def test_worker_sample_without_can_reply_does_not_report_ready(self):
+        self.c.robot_status='waiting'
+        self.c.inbox.put({'status':'feedback','q':list(START)+[.7],
+          'velocity':[0.]*7,'current':[0.]*7,'sample_time':time.monotonic(),
+          'rx_age':1.,'rx_count':0,'rx_ids':[],'error_codes':[],
+          'fault':True,'fault_reason':'CAN feedback timeout'})
+        self.c.tick()
+        self.assertEqual(self.c.robot_status,'fault')
+        self.assertFalse(self.c.snapshot()['model_ready'])
+        self.assertFalse(any('已收到实机反馈' in event['message']
+                             for event in self.c.events))
     def test_stale_worker_sample_not_freshened(self):
         self.feed(sample_age=2.)
         self.assertEqual(self.c.robot_status,'fault')

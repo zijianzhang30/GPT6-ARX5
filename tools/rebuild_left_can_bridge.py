@@ -14,7 +14,8 @@ import time
 import urllib.request
 
 ROOT = Path(__file__).resolve().parents[1]
-ADAPTER = '/dev/serial/by-id/usb-Openlight_Labs_CANable2_b158aa7_github.com_normaldotcom_canable2.git_208833765931-if00'
+# CANables exchanged on 2026-10-11: physical left=5E5931/can0, right=765931/can1.
+ADAPTER = '/dev/serial/by-id/usb-Openlight_Labs_CANable2_b158aa7_github.com_normaldotcom_canable2.git_2088335E5931-if00'
 
 
 def preflight():
@@ -40,11 +41,20 @@ def preflight():
         if argv and Path(argv[0]).name == 'slcand':
             exact = argv[1:] == ['-o', '-f', '-s8', ADAPTER, 'can0']
             if ('can0' in argv or ADAPTER in argv) and not exact:
-                raise RuntimeError('Unexpected left bridge arguments; nothing changed')
+                raise RuntimeError(
+                    f'Unexpected left bridge arguments: {argv!r}; '
+                    f'expected -o -f -s8 {ADAPTER} can0; nothing changed'
+                )
             if exact:
                 matches.append((int(proc.name), argv))
-    if len(matches) != 1 or not Path('/sys/class/net/can0').exists():
-        raise RuntimeError('Expected exactly one existing left bridge and can0')
+    if not Path('/sys/class/net/can0').exists():
+        raise RuntimeError(
+            'can0 is missing, likely after USB re-enumeration; this script only rebuilds '
+            'an existing interface. Use sudo bash '
+            f'{ROOT}/tools/restore_can.sh to restore the missing can0 instead.'
+        )
+    if len(matches) != 1:
+        raise RuntimeError(f'Expected exactly one existing left bridge, found {len(matches)}')
     return matches[0]
 
 

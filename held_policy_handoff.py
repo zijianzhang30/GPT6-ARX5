@@ -313,6 +313,54 @@ class ObserverPreparationHoldHandoff(ObservingPolicyHandoff):
 
 def validate_completed_review(initial, events, failed_result=None):
     """Require either completed stacking or an explicitly failed, recovered trial."""
+    # The final return command can be a read-only at-initial verification.
+    # Its timing completion follows the physical completion marker. Accept only
+    # that exact, finished four-event sequence; never discard a later command.
+    return_timing_ends = set()
+    for i, event in enumerate(events):
+        if event.get('event') != 'right_return_complete' or i == 0:
+            continue
+        began = events[i - 1]
+        if began.get('event') != 'review_command_started':
+            continue  # Legacy records without timing wrappers.
+        after = events[i + 1:i + 3]
+        if (began.get('command') != 'return-right-step'
+                or not isinstance(began.get('command_index'), int)
+                or len(after) != 2 or after[0].get('event') != 'observation'
+                or after[1].get('event') != 'review_command_finished'
+                or after[1].get('command') != 'return-right-step'
+                or after[1].get('command_index') != began['command_index']
+                or after[1].get('outcome') != 'completed'):
+            raise ValueError('Incomplete final return verification timing pair')
+        return_timing_ends.add(i + 2)
+    # Current review hosts wrap read-only observations in paired timing events.
+    # Accept those wrappers only; never hide a motion/renewal or an unfinished input.
+    normalized = []
+    observing = None
+    observed = False
+    for index, event in enumerate(events):
+        if index in return_timing_ends:
+            continue
+        kind = event.get('event')
+        if kind == 'review_command_started' and event.get('command') == 'observe':
+            if observing is not None or not isinstance(event.get('command_index'), int):
+                raise ValueError('Invalid observation timing pair')
+            observing, observed = event['command_index'], False
+            continue
+        if kind == 'review_command_finished' and event.get('command') == 'observe':
+            if (observing != event.get('command_index') or not observed
+                    or event.get('outcome') != 'completed'):
+                raise ValueError('Incomplete observation timing pair')
+            observing = None
+            continue
+        if observing is not None:
+            if kind != 'observation' or observed:
+                raise ValueError('Activity within read-only observation')
+            observed = True
+        normalized.append(event)
+    if observing is not None:
+        raise ValueError('Observation command still active')
+    events = normalized
     required = ('left_placement_visually_verified', 'left_return_complete',
                 'right_phase_authorized', 'stack_release_and_withdrawal_visually_verified',
                 'right_return_complete')
@@ -332,12 +380,24 @@ def validate_completed_review(initial, events, failed_result=None):
                 or result.get('reported_success') is not False
                 or result.get('program_verified_success') is not False
                 or result.get('both_at_initial_verified') is not True
-                or result.get('right_phase_started') is not False
+                or not isinstance(result.get('right_phase_started'), bool)
                 or not finite(recovery_at)
                 or not finite(result.get('task_failure_at_s'))
-                or result['task_failure_at_s'] >= recovery_at
-                or any(e.get('event') == 'right_phase_authorized' for e in events)):
-            raise ValueError('An explicitly failed and recovered pre-right-phase trial is required')
+                or result['task_failure_at_s'] >= recovery_at):
+            raise ValueError('An explicitly failed and recovered trial is required')
+        entered_right = any(e.get('event') == 'right_phase_authorized' for e in events)
+        if entered_right != result['right_phase_started']:
+            raise ValueError('Failure phase does not match owned review log')
+        if entered_right:
+            phase = 0
+            for event in events:
+                if phase < 3 and event.get('event') == required[phase]:
+                    if not finite(event.get('at_s')) or event['at_s'] >= result['task_failure_at_s']:
+                        raise ValueError('Invalid failed right-phase ordering')
+                    phase += 1
+            if (phase != 3 or result.get('failure_phase') != 'right'
+                    or any(e.get('event') == required[3] for e in events)):
+                raise ValueError('Failed right trial requires verified left return and no stack success')
         completed = next((i for i, e in enumerate(events)
             if e.get('event') == 'observation' and e.get('at_s') == recovery_at), None)
     if completed is None or not events or events[-1].get('event') != 'observation':
@@ -398,6 +458,13 @@ class CompletedReviewHandoff(ObservingPolicyHandoff):
         except BaseException:
             self.close()
             raise
+
+    def require_transfer_ready(self):
+        # Constructor validates completed observations, including timing wrappers.
+        # Requiring the raw final event to be 'observation' would reject the newer
+        # read-only review_command_finished record after watchdogs have started.
+        if self.events.read_bytes() != self.contents:
+            raise ValueError('Review recording changed; do not transfer an active host')
 
     def snapshot(self, robots):
         if self.events.read_bytes() != self.contents:

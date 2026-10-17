@@ -2,7 +2,8 @@
 # Recover only the known CANable link. Never initialize the robot SDK.
 set -euo pipefail
 
-adapter='/dev/serial/by-id/usb-Openlight_Labs_CANable2_b158aa7_github.com_normaldotcom_canable2.git_208833765931-if00'
+# CANables exchanged on 2026-10-11: physical left=5E5931/can0, right=765931/can1.
+adapter='/dev/serial/by-id/usb-Openlight_Labs_CANable2_b158aa7_github.com_normaldotcom_canable2.git_2088335E5931-if00'
 worker='/home/tuojing/arx_r5_control/robot_worker.py'
 
 if [[ $EUID != 0 ]]; then

@@ -40,7 +40,8 @@ class LiveController(Controller):
         env=os.environ.copy();base=ROOT/'vendor/R5-master/py/ARX_R5_python/bimanual/api'
         env['LD_LIBRARY_PATH']=':'.join([str(ROOT/'kdl_local/lib'),str(base/'arx_r5_src'),str(base),env.get('LD_LIBRARY_PATH','')])
         while not self.inbox.empty():self.inbox.get()
-        self.feedback_at=0.;self.rx_age=None;self.gripper_raw=None
+        self.feedback_at=0.;self.rx_age=None;self.rx_count=0;self.rx_ids=[]
+        self.error_codes=[];self.gripper_raw=None
         self.worker_fault_reason=None
         self.worker_protocol_version=None
         self.policy_gate.reset()
@@ -176,11 +177,14 @@ class LiveController(Controller):
                     self.worker_fault_reason=message.get('fault_reason')
                     self.worker_protocol_version=message.get('worker_protocol_version')
                     self.rx_age=message['rx_age'];self.rx_count=message['rx_count'];self.rx_ids=message['rx_ids']
-                    if self.robot_status in ('initializing','waiting'):
-                        self.target=self.q.copy();self.robot_status='ready';self.note('已收到实机反馈。网页模型跟随真实关节；点击启用控制后操作。')
-                    if message.get('fault') or self.rx_age>.5 or any(code>10 for code in self.error_codes):
+                    invalid_feedback=(message.get('fault') or not finite(self.rx_age)
+                                      or self.rx_age<0 or self.rx_age>.5 or self.rx_count<=0
+                                      or any(code>10 for code in self.error_codes))
+                    if invalid_feedback:
                         if self.enabled:self.stop('机械臂反馈超时或 SDK 报错，已请求保护模式')
                         self.robot_status='fault'
+                    elif self.robot_status in ('initializing','waiting'):
+                        self.target=self.q.copy();self.robot_status='ready';self.note('已收到实机反馈。网页模型跟随真实关节；点击启用控制后操作。')
                 except (ValueError,KeyError):self.stop('无效反馈，已暂停');self.robot_status='fault'
             elif status=='ready':self.robot_status='waiting'
             elif status in ('error','exited','closed'):

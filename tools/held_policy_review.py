@@ -151,17 +151,17 @@ def main():
             or args.from_initial_review_pid or args.from_adopted_review_pid or args.from_healthy_probe_pid
             or args.from_measured_probe_pid or args.from_reviewed_diagnostic_pid) and not args.run:
         parser.error('A handoff source requires --run')
-    if args.left_return_before_right and not (args.prepare_idle or args.from_review_pid):
+    if args.left_return_before_right and not (args.prepare_idle or args.from_review_pid or args.from_initial_review_pid):
         parser.error('Sequential trial requires idle preparation or a completed review handoff')
-    if args.from_review_pid and not args.left_return_before_right:
-        parser.error('Completed review handoff requires a new sequential trial')
+    if args.from_review_pid and not (args.left_return_before_right or args.working_arm):
+        parser.error('Completed review handoff requires an explicit new sequential or single-working-arm trial')
     if bool(args.from_single_review_pid) != bool(args.adopt_arm):
         parser.error('Single review handoff requires --adopt-arm and its PID together')
     if args.from_single_review_pid and not args.working_arm:
         parser.error('Single review handoff requires explicit --working-arm')
     if args.from_camera_review_pid and not args.working_arm:
         parser.error('Camera hold handoff requires explicit --working-arm')
-    if args.from_initial_review_pid and not args.working_arm:
+    if args.from_initial_review_pid and not (args.working_arm or args.left_return_before_right):
         parser.error('Initial input handoff requires explicit --working-arm')
     if args.from_adopted_review_pid and (not args.working_arm or probe_mode):
         parser.error('Adopted input handoff requires ordinary explicit --working-arm')
@@ -227,7 +227,8 @@ def main():
                if args.from_adopted_review_pid else
                InitialReviewInputHandoff(args.from_initial_review_pid, args.paired_client,
                                        args.url, args.run, args.tracking_reserve_deg,
-                                       args.minimum_cartesian_command_step_deg)
+                                       args.minimum_cartesian_command_step_deg,
+                                       sequential=args.left_return_before_right)
                if args.from_initial_review_pid else
                CameraHoldHandoff(args.from_camera_review_pid, args.paired_client, args.url,
                                args.run, args.tracking_reserve_deg)
@@ -319,7 +320,10 @@ def main():
                                             'one_empty_left_probe': args.one_empty_left_probe,
                                             'one_empty_left_joint_diagnostic': args.one_empty_left_joint_diagnostic,
                                             'one_arm_at_a_time': working is not None})
-            initial = {s: clients[s].state() for s in ARMS}
+            initial = (handoff.original_initial if args.from_initial_review_pid and args.left_return_before_right
+                       else {s: clients[s].state() for s in ARMS})
+            if args.from_initial_review_pid and args.left_return_before_right:
+                log('original_return_reference_preserved', {'source': str(args.run/'initial_state.json')})
             (args.output/'initial_state.json').write_text(json.dumps(initial, indent=2))
             if args.left_return_before_right:
                 gate = LeftReturnGate(initial['left']['joints_deg'])
