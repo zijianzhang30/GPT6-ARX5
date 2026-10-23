@@ -1,0 +1,1 @@
+本轮失败，已停录18个MP4并验证。宿主123151/PTY43710已退出。用户已请求回初始位姿；先等待本次下落后的承托/排障/清场确认。左J4/J5超范围，不可直接使能。故障原轨迹不可重播。恢复参考见return_reference.json，非厂商HOME；原参考不可改写。新状态须只读获取，control/current_state.json为故障前旧快照。详见EXPERIMENT_RECORD.md。

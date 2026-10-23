@@ -27,3 +27,4 @@ class CompletedReviewTaskModeTests(unittest.TestCase):
                                   side_effect=RuntimeError('client boundary; no hardware')):
                     with self.assertRaisesRegex(RuntimeError, 'client boundary'):
                         held_policy_review.main()
+

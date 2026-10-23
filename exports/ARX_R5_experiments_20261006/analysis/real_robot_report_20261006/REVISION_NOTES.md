@@ -1,0 +1,14 @@
+# 报告修订记录
+
+## v2：依据用户提供的项目方案对齐（2026-10-06）
+
+报告入口：[Markdown](../../REAL_ROBOT_EXPERIMENT_REPORT_20261006.md) / [HTML阅读版](../../REAL_ROBOT_EXPERIMENT_REPORT_20261006.html)。
+
+- 保存[用户粘贴的方案](PROJECT_PLAN_USER_PROVIDED_20261006.md)及[来源元数据](project_plan_provenance.json)，以方案的背景、任务与协议、仿真、拓境真机、电信多本体、结果交付结构重整报告。
+- 区分9月21—30日原计划与10月1—6日实际任务记录，明确本版仅含已取得的R5真机材料；不推定其他执行线没有开展测试。
+- 保留18类任务/变体的原结果、成功条件、失败、人工辅助、视频缺口和设备故障。9类有条件内成功案例是覆盖情况，不是统一策略成功率。
+- 增加[项目任务对齐表](protocol_alignment.csv)。缺失的飞书表格、图片、正式编号与分层不自行补造。
+- [资源表](resource_windows.csv)增加去重response记录数、请求总数与费用/延迟取得状态。未知不填0，不把response计数当全部请求或机械臂命令数。
+- 明确人类示范、力上下文及主动接触探索由海宝、梓健独立推进，不计入本项目实验量、排期和交付验收。
+
+修订前文件保存在[版本快照目录](versions/v1_before_project_plan/index.html)。本次未修改原实验记录或视频，也未写入在线飞书文档。生成与核对信息见[validation.json](validation.json)。

@@ -1,9 +1,15 @@
 # Local experiment outputs and recordings
-/analysis/
-/recordings/
+/analysis/**
+!/analysis/**/
+!/analysis/**/*.md
+/recordings/**
+!/recordings/**/
+!/recordings/**/*.md
 /Log/
 /robot.log
-/exports/
+/exports/**
+!/exports/**/
+!/exports/**/*.md
 
 # Keep recordings, archives, local credentials and generated reports out of commits
 *.mp4
@@ -49,3 +55,12 @@ build/
 # Agent-local metadata
 /.agents/
 /.codex/
+
+# External experiment archives: Markdown records and their source manifest only
+/experiment_records/**
+!/experiment_records/**/
+!/experiment_records/**/*.md
+!/experiment_records/SOURCE_MANIFEST.json
+/experiments/**
+!/experiments/**/
+!/experiments/**/*.md
