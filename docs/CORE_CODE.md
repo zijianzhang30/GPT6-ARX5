@@ -9,6 +9,7 @@
 | CAN 恢复 | `connect_can.sh`、`tools/rebuild_left_can_bridge.py`、`tools/restart_left_can_bridge.py`、`tools/restore_can.sh` |
 | 双臂策略和末端规划 | `r5_dual_policy.py`、`r5_policy_backend.py`、`r5_cartesian.py`、`r5_official_solver.py`、`policy_trajectory.py` |
 | 监督、控制交接与回位 | `tools/held_policy_review.py`、`held_policy_handoff.py`、`initial_review_handoff.py`、`reviewed_task_handoff.py`、`reviewed_return.py`、`review_telemetry.py` |
+| ASPIRE System 2 实机适配 | `tools/aspire_system2_mcp.py`、`aspire_review.py`、[运行说明](ASPIRE_SYSTEM2_REAL.md) |
 | 相机和三路录像 | `camera_streams.py`、`record_workbench.py`、`tools/record_three_cameras.py` |
 | token 和调用次数 | `tools/collect_experiment_usage.py`、[统计口径](EXPERIMENT_USAGE.md) |
 | 实验技能 | `skills/arx-r5-tabletop-tasks/`、`skills/jelly-grasp/`、`skills/push-blackboard-eraser/` |

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Observe and issue bounded GPT-Policy tools after taking over an idle inference."""
 import argparse
+from contextlib import ExitStack
 import json
 from pathlib import Path
 import queue
@@ -12,6 +13,7 @@ from jsonschema import ValidationError
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from control import ROOT
+from aspire_review import AspireRequest, AspireReview, failure, review_socket, validate_socket_path
 from held_policy_handoff import ObservingPolicyHandoff, CompletedReviewHandoff, SingleReviewHandoff
 from camera_hold_recovery import CameraHoldHandoff
 from initial_review_handoff import InitialReviewInputHandoff
@@ -131,6 +133,9 @@ def main():
     mode.add_argument('--working-arm', choices=('left', 'right'),
                       help='Only this arm can receive targets; switch explicitly after visual review')
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--aspire-socket', type=Path, help='Optional strictly local System 2 endpoint')
+    parser.add_argument('--aspire-allow-motion', action='store_true',
+                        help='Allow bounded left-arm System 2 requests over the local socket')
     parser.add_argument('--paired-client', required=True)
     parser.add_argument('--url', default='http://127.0.0.1:8768')
     parser.add_argument('--adopt-arm', choices=('left', 'right'))
@@ -145,6 +150,15 @@ def main():
                         help='Only observe, bounded reanchor, and one fixed empty-left J3 diagnostic; no task recovery')
     args = parser.parse_args()
     probe_mode = args.one_empty_left_probe or args.one_empty_left_joint_diagnostic
+    if args.aspire_allow_motion and not args.aspire_socket:
+        parser.error('--aspire-allow-motion requires --aspire-socket')
+    if args.aspire_socket and (args.working_arm != 'left' or probe_mode):
+        parser.error('--aspire-socket requires ordinary --working-arm left mode')
+    if args.aspire_socket:
+        try:
+            args.aspire_socket = validate_socket_path(args.aspire_socket)
+        except (OSError, ValueError) as exc:
+            parser.error(str(exc))
     if args.retain_settle_fault_hold and (not args.working_arm or probe_mode):
         parser.error('Arrival fault hold requires ordinary --working-arm mode')
     if (args.from_pid or args.from_review_pid or args.from_camera_review_pid
@@ -253,7 +267,8 @@ def main():
     def read_commands():
         for line in sys.stdin:
             commands.put(line.strip())
-    with (args.output/'events.jsonl').open('x') as stream:
+    aspire = AspireReview(args.aspire_allow_motion) if args.aspire_socket else None
+    with ExitStack() as connections, (args.output/'events.jsonl').open('x') as stream:
         timer = ReviewTimer()
         def log(event, data):
             stream.write(json.dumps({'at_s': time.time(), 'event': event, **data})+'\n')
@@ -274,6 +289,9 @@ def main():
             state = robot.state()
             (args.output/'current_state.json').write_text(json.dumps(state, indent=2))
             packet = review_packet(state, images, stamp, initial=initial)
+            if aspire:
+                for side, arm in packet['arms'].items():
+                    arm['measured_opening'] = state['arms'][side]['gripper_normalized']
             packet['working_arm'] = working.side if working else None
             packet['capture_wall_s'] = time.monotonic()-began
             packet['timing_before_current_command_finishes'] = timer.summary()
@@ -283,6 +301,23 @@ def main():
             log('observation', {'state': state, 'image_stamp': stamp,
                                 'capture_wall_s': packet['capture_wall_s']})
             print(json.dumps(packet), flush=True)
+            return packet
+
+        def checked_capture():
+            if stationary_gated:
+                camera_gates[args.adopt_arm or working.side].require_fresh()
+            return capture()
+
+        def execute_review_tool(command):
+            if gate:
+                gate.check_action(command['tool'], command['arguments'],
+                    robots['left'].backend._read(holding=True))
+            if working:
+                working.check_action(command['tool'], command['arguments'])
+            log('request', command)
+            result = robot.execute(command['tool'], command['arguments'])
+            log('result', result)
+            return result
         try:
             cameras.start()
             if (args.from_camera_review_pid or args.from_initial_review_pid or args.from_adopted_review_pid
@@ -332,6 +367,9 @@ def main():
             threading.Thread(target=read_commands, daemon=True).start()
             capture()
             timer.ready()
+            if aspire:
+                address = connections.enter_context(review_socket(args.aspire_socket, commands))
+                print(f'ASPIRE System 2 socket: {address}', flush=True)
             if probe_mode:
                 name = 'diagnose-empty-left-j3' if args.one_empty_left_joint_diagnostic else 'probe-empty-up-3mm'
                 print('DIAGNOSTIC HOLD: observe, renew, '+name+'. One attempt; no task recovery; all further motion locked.', flush=True)
@@ -350,6 +388,30 @@ def main():
                     line = commands.get(timeout=.1)
                 except queue.Empty:
                     continue
+                if isinstance(line, AspireRequest):
+                    if not line.reply.set_running_or_notify_cancel():
+                        continue
+                    log('review_command_started', timer.begin('aspire_' + line.tool[:80]))
+                    outcome = 'failed'
+                    try:
+                        if stationary_gated:
+                            camera_gates[args.adopt_arm or working.side].require_fresh()
+                        answer = aspire.dispatch(line, checked_capture, execute_review_tool, working.side)
+                        outcome = 'completed'
+                    except (ValueError, ValidationError, TrajectoryIKError) as exc:
+                        outcome = 'rejected'
+                        log('rejected', {'reason': str(exc)})
+                        answer = failure('rejected', str(exc))
+                    except BaseException:
+                        line.reply.set_result(failure('outcome_unknown',
+                            'Review host fault. Inspect state before any further action.'))
+                        raise
+                    finally:
+                        log('review_command_finished', timer.finish(outcome))
+                    line.reply.set_result(answer)
+                    continue
+                if aspire:
+                    aspire.current = None
                 label = 'tool_json' if line.startswith('{') else line[:80]
                 log('review_command_started', timer.begin(label))
                 outcome = 'failed'
@@ -490,14 +552,7 @@ def main():
                         command = json.loads(line)
                         if set(command) != {'tool', 'arguments'} or command['tool'] not in ('move_to', 'move_eef_chunk', 'check_path', 'set_gripper'):
                             raise ValueError('Expected a bounded GPT-Policy motion tool')
-                        if gate:
-                            gate.check_action(command['tool'], command['arguments'],
-                                robots['left'].backend._read(holding=True))
-                        if working:
-                            working.check_action(command['tool'], command['arguments'])
-                        log('request', command)
-                        result = robot.execute(command['tool'], command['arguments'])
-                        log('result', result)
+                        result = execute_review_tool(command)
                         print(json.dumps({'result': {k: v for k, v in result.items()
                             if k != 'trajectories'}}), flush=True)
                     capture()
@@ -513,6 +568,7 @@ def main():
                     temporary.write_text(json.dumps(measured, indent=2))
                     temporary.replace(args.output/'review_timing.json')
         except BaseException as exc:
+            connections.close()
             if isinstance(exc, R5PoweredHoldFault):
                 quarantine_arrival_fault(robot, supervisor, exc, log)
             retained = software_error_hold_snapshot(robots, supervisor, exc)
