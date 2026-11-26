@@ -1,5 +1,9 @@
 'use strict';
-const armNames={left:'左臂',right:'右臂'};
+const workbenchArms={
+  left:{name:'左臂',channel:'can1',adapter:'5E5931',camera:'gemini_right',serial:'CV2C86100180'},
+  right:{name:'右臂',channel:'can0',adapter:'765931',camera:'gemini',serial:'CV2C8610015R'},
+};
+const workbenchArmOrder=['left','right'];
 let armOverviewBusy=false;
 function showArmOverview(arms){
   for(const arm of arms){
@@ -10,25 +14,42 @@ function showArmOverview(arms){
     card.querySelector('.arm-status').textContent=label;
     card.classList.toggle('arm-unavailable',!valid);
     card.classList.toggle('arm-selected',arm.id===selectedArm);
-    card.querySelector('.arm-channel').textContent=`${arm.id==='left'?'can0 · 765931':'can1 · 5E5931'} · ${s&&Number.isFinite(s.rx_age_ms)&&s.rx_age_ms<1000?`CAN 回包 ${s.rx_age_ms} ms`:'暂无新鲜电机反馈'}`;
+    const {channel,adapter}=workbenchArms[arm.id];
+    card.querySelector('.arm-channel').textContent=`${channel} · ${adapter} · ${s&&Number.isFinite(s.rx_age_ms)&&s.rx_age_ms<1000?`CAN 回包 ${s.rx_age_ms} ms`:'暂无新鲜电机反馈'}`;
     card.querySelectorAll('[data-joint]').forEach((el,i)=>{el.textContent=valid&&Number.isFinite(s.joints_deg?.[i])?s.joints_deg[i].toFixed(2)+'°':'—';});
     card.querySelector('.arm-grip').textContent=valid&&Number.isFinite(s.gripper_raw)?s.gripper_raw.toFixed(3):'—';
     card.querySelector('.arm-grip-target').textContent=valid&&Number.isFinite(s.gripper_command_raw)?s.gripper_command_raw.toFixed(3):'—';
     card.querySelector('.arm-error').textContent=arm.error||(s?.error_codes?.length?`故障码：${[...new Set(s.error_codes)].join(', ')}`:s?.message||'');
   }
 }
-function enableDualUI(){
+function enableDualUI(recordingArm){
   dualMode=true;
   document.body.classList.add('dual-mode');
   $('dual-overview').hidden=false;$('arm-selector').hidden=false;
-  $('arm-cards').innerHTML=['left','right'].map(arm=>`<article id="arm-${arm}-card" class="arm-card"><div class="small-head"><h3>${armNames[arm]} <span class="arm-channel"></span></h3><span class="arm-status pill">等待状态</span></div><dl class="arm-joints">${Array.from({length:6},(_,i)=>`<div><dt>J${i+1}</dt><dd data-joint="${i}">—</dd></div>`).join('')}</dl><div class="arm-grip-line">夹爪反馈 <strong class="arm-grip">—</strong><span>目标 <b class="arm-grip-target">—</b> · SDK 原始值</span></div><p class="arm-error"></p></article>`).join('');
+  $('active-arm').innerHTML=workbenchArmOrder.map(id=>{
+    const {name,channel}=workbenchArms[id];
+    return `<option value="${id}">${name} · ${channel}</option>`;
+  }).join('');
+  $('active-arm').value=selectedArm;
+  $('active-arm-label').textContent=`正在读取${workbenchArms[selectedArm].name}…`;
+  $('arm-cards').innerHTML=workbenchArmOrder.map(arm=>`<article id="arm-${arm}-card" class="arm-card"><div class="small-head"><h3>${workbenchArms[arm].name} <span class="arm-channel"></span></h3><span class="arm-status pill">等待状态</span></div><dl class="arm-joints">${Array.from({length:6},(_,i)=>`<div><dt>J${i+1}</dt><dd data-joint="${i}">—</dd></div>`).join('')}</dl><div class="arm-grip-line">夹爪反馈 <strong class="arm-grip">—</strong><span>目标 <b class="arm-grip-target">—</b> · SDK 原始值</span></div><p class="arm-error"></p></article>`).join('');
   $('camera-title').textContent='左右手腕 + 全局画面';
-  document.querySelector('[data-camera="gemini"] strong').textContent='左臂手腕 · Gemini 305';
-  document.querySelector('[data-camera="gemini"] .camera-card-head>div>span').textContent='848 × 480 · CV2C8610015R';
-  document.querySelector('[data-camera="gemini_right"]').hidden=false;
-  createCameraFeed('gemini_right');
-  $('demo-title').textContent='左臂遥操示范记录';
-  document.querySelector('.demo-intro').textContent='此录制仍仅保存左臂状态、左腕与全局画面。双臂联合录制尚未开启。';
+  const overview=document.querySelector('[data-camera="external"]');
+  for(const id of workbenchArmOrder){
+    const {name,camera,serial}=workbenchArms[id];
+    const card=document.querySelector(`[data-camera="${camera}"]`);
+    card.querySelector('strong').textContent=`${name}手腕 · Gemini 305`;
+    card.querySelector('.camera-card-head>div>span').textContent=`848 × 480 · ${serial}`;
+    card.querySelector('img').alt=`${name}手腕相机实时彩色画面`;
+    overview.before(card);
+    card.hidden=false;
+    if(!cameraFeeds.has(camera))createCameraFeed(camera);
+  }
+  const recordingName=workbenchArms[recordingArm]?.name;
+  if(recordingName){
+    $('demo-title').textContent=`${recordingName}遥操示范记录`;
+    document.querySelector('.demo-intro').textContent=`保存${recordingName}状态、该臂腕部与全局画面。`;
+  }
   $('active-arm').onchange=()=>{
     const requested=$('active-arm').value;
     if(state?.enabled||state?.robot_status==='initializing'||inFlightCommands||$('dialog').open){$('active-arm').value=selectedArm;toast('请先结束当前操作并失能，再切换机械臂。');return;}
@@ -37,7 +58,7 @@ function enableDualUI(){
     $('grip-input').value='';$('grip-value').textContent='—';$('grip-percent').textContent='—';
     for(const id of ['x-value','y-value','z-value'])$(id).textContent='—';
     document.querySelectorAll('.motion-action').forEach(e=>e.disabled=true);$('enable').disabled=true;
-    $('active-arm-label').textContent=`正在读取${armNames[selectedArm]}…`;cycle();
+    $('active-arm-label').textContent=`正在读取${workbenchArms[selectedArm].name}…`;cycle();
   };
 }
 async function pollArmOverview(){
@@ -48,7 +69,9 @@ async function pollArmOverview(){
     if(response.status===404&&!dualMode)return;
     if(!response.ok)throw new Error('双臂状态服务暂不可用');
     const result=await response.json();
-    if(!dualMode&&result.arms?.some(a=>a.id==='right'))enableDualUI();
+    if(!dualMode&&result.arms?.length===2&&result.arms.every(a=>workbenchArms[a.id]?.channel===a.channel)){
+      enableDualUI(result.recording_arm);
+    }
     if(dualMode)showArmOverview(result.arms);
   }catch(error){if(dualMode)showArmOverview(['left','right'].map(id=>({id,state:null,error:error.message})));}
   finally{armOverviewBusy=false;if(dualMode)setTimeout(pollArmOverview,500);}

@@ -22,7 +22,11 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from visual_control import WorkbenchClient
 
-VIEWS = {'top': 'external', 'left': 'gemini', 'right': 'gemini_right'}
+VIEWS = {
+    'top': '/api/cameras/external/frame.jpg',
+    'left': '/api/arms/left/camera/frame.jpg',
+    'right': '/api/arms/right/camera/frame.jpg',
+}
 
 
 def iso(timestamp):
@@ -36,7 +40,7 @@ def atomic_json(path, value):
 
 
 def fetch(base, key):
-    jpeg, sequence, device = WorkbenchClient(base).camera(key)
+    jpeg, sequence, device = WorkbenchClient(base).camera_path(key)
     received = time.time()
     frame = cv2.imdecode(np.frombuffer(jpeg, np.uint8), cv2.IMREAD_COLOR)
     if frame is None or not sequence or not device:

@@ -1,19 +1,19 @@
-"""Opt-in quarantine after a stationary joint arrival failure.
+"""Quarantine after a stationary actuator arrival failure.
 
 This is not a safety stop or hardware qualification. No enable, target, resume,
 gripper change, retry, fault reset or homing command is available here.
 """
 import copy
 
-from motion_safety import POLICY_HOLD_ERROR_DEG, vector
+from motion_safety import POLICY_HOLD_ERROR_DEG, finite, vector
 from r5_policy_backend import R5ExecutionFault
 
 
-def stationary(state):
+def stationary(state, *, check_velocity=True):
     if (state.get('moving') is not False
             or state.get('policy_trajectory_active') is not False
             or not vector(state.get('velocity_deg'))
-            or max(map(abs, state['velocity_deg'])) > .5):
+            or (check_velocity and max(map(abs, state['velocity_deg'])) > .5)):
         raise R5ExecutionFault('Fault hold requires stationary measured feedback and no active trajectory')
     if max(abs(a-b) for a, b in zip(state['command_deg'], state['joints_deg'])) > POLICY_HOLD_ERROR_DEG:
         raise R5ExecutionFault('Fault hold exceeds the original hold tracking limit')
@@ -27,8 +27,11 @@ def stationary(state):
 def require_stationary_arrival(low, state):
     trace = low.last_execution_feedback or {}
     target = trace.get('target', {})
-    if set(target) != {'joints_deg'} or not vector(target['joints_deg']):
-        raise R5ExecutionFault('Only a joint arrival failure can retain fault hold')
+    gripper_arrival = low.stationary_arrival and set(target) == {'gripper_raw'}
+    expected_joints = (trace.get('initial_command_deg') if gripper_arrival
+                       else target.get('joints_deg'))
+    if not vector(expected_joints) or (not gripper_arrival and set(target) != {'joints_deg'}):
+        raise R5ExecutionFault('Fault hold requires a valid final actuator command')
     now = low.clock()
     samples = [s for s in trace.get('samples', []) if 0 <= now-s['at_s'] <= .65]
     if (len(samples) < 5 or samples[-1]['at_s']-samples[0]['at_s'] < .5
@@ -40,11 +43,20 @@ def require_stationary_arrival(low, state):
     measured = [s['joints_deg'] for s in samples] + [state['joints_deg']]
     if any(max(q)-min(q) > .1 for q in zip(*measured)):
         raise R5ExecutionFault('Measured joints have not stopped')
-    if any(max(abs(a-b) for a, b in zip(q, target['joints_deg'])) > .05
+    if any(max(abs(a-b) for a, b in zip(q, expected_joints)) > .05
            for q in [s['command_deg'] for s in samples] + [state['command_deg']]):
         raise R5ExecutionFault('Final joint command has not been submitted and held')
-    if any(s.get('checks', {}).get('grip_ok') is not True
-           or abs(s['gripper_command_raw']-state['gripper_command_raw']) > .01 for s in samples):
+    if gripper_arrival:
+        goal = target['gripper_raw']
+        commands = [s.get('gripper_command_raw') for s in samples] + [state['gripper_command_raw']]
+        readings = [s.get('gripper_raw') for s in samples] + [state['gripper_raw']]
+        if (not finite(goal) or not 0 <= goal <= 5
+                or any(not finite(q) or abs(q-goal) > .01 for q in commands)
+                or any(not finite(q) or not 0 <= q <= 5 for q in readings)
+                or max(readings)-min(readings) > .02):
+            raise R5ExecutionFault('Gripper is still moving or its final command is pending')
+    elif any(s.get('checks', {}).get('grip_ok') is not True
+             or abs(s['gripper_command_raw']-state['gripper_command_raw']) > .01 for s in samples):
         raise R5ExecutionFault('Gripper changed during arrival history')
 
 

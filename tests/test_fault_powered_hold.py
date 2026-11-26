@@ -5,7 +5,9 @@ import unittest
 from unittest.mock import Mock, patch
 
 from fault_powered_hold import require_stationary_arrival
-from r5_policy_backend import R5PolicyBackend, R5ExecutionFault, R5PoweredHoldFault
+from r5_policy_backend import (
+    REVIEWED_POSE_SETTLE_TIMEOUT_S, R5PolicyBackend, R5ExecutionFault, R5PoweredHoldFault,
+)
 from r5_policy_supervisor import R5PolicySupervisor
 from r5_dual_policy import DualCartesianBackend, DualSupervisor
 from r5_cartesian import CartesianBackend
@@ -15,14 +17,15 @@ from test_r5_cartesian import fixture_profile, TimedWorkbench
 
 
 class FaultHoldTests(unittest.TestCase):
-    def make_arm(self, side='left', enabled=True):
+    def make_arm(self, side='left', enabled=True, *, stationary_arrival=False):
         clock, client = Clock(), Workbench()
         client.arm = side
         client.current.update(velocity_deg=[0.]*6, policy_trajectory_active=False,
                               policy_trajectory_protocol=PolicyTrajectory.protocol)
         vision = Mock()
         low = R5PolicyBackend(client, vision, clock=clock, sleep=clock.sleep,
-                              retain_settle_fault_hold=enabled)
+                              retain_settle_fault_hold=enabled,
+                              stationary_arrival=stationary_arrival)
         low.check()
         args = {'positions': low.state()['joint_positions_rad'][:],
                 'observation_id': low.observation['observation_id'], 'note': 'Offline stalled joint'}
@@ -65,6 +68,56 @@ class FaultHoldTests(unittest.TestCase):
             low.execute('move_joints', args)
         self.assertFalse(client.current['enabled'])
         self.assertIsNone(low.fault_hold)
+
+    def test_stationary_arrival_retains_both_arms_without_waiting_for_timeout(self):
+        fixtures = {s: self.make_arm(s, enabled=False, stationary_arrival=True)
+                    for s in ('left', 'right')}
+        robots = {s: CartesianBackend(f[0], fixture_profile(), 'both', 'image_grasp')
+                  for s, f in fixtures.items()}
+        pair = DualCartesianBackend(robots, Mock())
+        low, client, clock, _, args = fixtures['left']
+        with self.assertRaisesRegex(R5PoweredHoldFault, 'Stationary joint feedback'):
+            pair._parallel({'left': lambda barrier: low.execute('move_joints', args,
+                                                               dispatch_barrier=barrier)})
+        self.assertIsNone(low.last_execution_feedback['deadline_at_s'])
+        self.assertLess(clock() - low.last_execution_feedback['started_at_s'], 1.)
+        self.assertEqual([action for action, _ in client.commands if action != 'heartbeat'],
+                         ['resume', 'target', 'pause_hold'])
+        self.assertTrue(pair.fault_hold)
+        for _, workbench, *_ in fixtures.values():
+            self.assertTrue(workbench.current['enabled'])
+            self.assertNotIn('stop', [action for action, _ in workbench.commands])
+        with self.assertRaises(R5PoweredHoldFault):
+            pair.state()
+
+    def test_healthy_unsettled_feedback_can_continue_past_five_seconds(self):
+        low, client, clock, _, args = self.make_arm(enabled=False, stationary_arrival=True)
+        start = clock()
+
+        def advance(duration):
+            clock.sleep(duration)
+            state = client.current
+            elapsed = clock() - start
+            state['moving'] = elapsed < 6.
+            state['joints_deg'][0] = .3 * math.sin(8. * elapsed) if state['moving'] else state['command_deg'][0]
+
+        low.sleep = advance
+        result = low.execute('move_joints', args)
+        self.assertGreater(clock() - start, 6.)
+        self.assertTrue(result['settle']['settled'])
+        self.assertTrue(client.current['enabled'])
+        self.assertNotIn('stop', [action for action, _ in client.commands])
+
+    def test_stationary_gripper_failure_keeps_powered_hold(self):
+        low, client, _, _, _ = self.make_arm(enabled=False, stationary_arrival=True)
+        args = {'observation_id': low.observation['observation_id'], 'gripper_raw': 3.5,
+                'note': 'Offline gripper stall'}
+        with self.assertRaisesRegex(R5PoweredHoldFault, 'Stationary gripper feedback'):
+            low.execute('set_gripper', args)
+        self.assertIsNone(low.last_execution_feedback['deadline_at_s'])
+        self.assertEqual(low.fault_hold.phase, 'holding')
+        self.assertTrue(client.current['enabled'])
+        self.assertNotIn('stop', [action for action, _ in client.commands])
 
     def test_unqualified_stationarity_or_gripper_never_retains_hold(self):
         cases = [dict(velocity_deg=[1.]*6), dict(velocity_deg=[float('nan')]*6),
@@ -220,6 +273,67 @@ class FaultHoldTests(unittest.TestCase):
         self.assertTrue(client.current['enabled'])
         self.assertIsNotNone(low.fault_hold)
         self.assertIn('policy_trajectory', [a for a, _ in client.commands])
+        self.assertNotIn('stop', [a for a, _ in client.commands])
+
+    def test_reviewed_cartesian_miss_allows_correction_after_fresh_feedback(self):
+        client, clock = TimedWorkbench(), Clock()
+        client.arm = 'left'
+        low = R5PolicyBackend(client, Mock(), clock=clock, sleep=clock.sleep,
+                              stationary_arrival=True)
+        arm = CartesianBackend(low, fixture_profile(), 'both', 'image_grasp')
+        pose = arm.state()['tcp_command_xyzquat'][:]
+        pose[2] += .003
+        plan = arm.plan([{'pose_xyzquat': pose}], 'Offline pose miss')
+        client.stall = True
+        client.current['velocity_deg'] = [.63, -1.89, .63, .63, .63, .63]
+
+        result = low.execute_trajectory(plan)
+
+        self.assertFalse(result['settle']['settled'])
+        self.assertFalse(result['settle']['partial_tracking_accepted'])
+        self.assertEqual(result['settle']['reason'], 'position_not_reached')
+        self.assertLess(clock() - low.last_execution_feedback['started_at_s'], 1.)
+        self.assertEqual(result['control_state'], 'holding')
+        self.assertIsNone(low.fault)
+        self.assertEqual([a for a, _ in client.commands if a != 'heartbeat'],
+                         ['resume', 'policy_trajectory', 'pause_hold'])
+        with self.assertRaisesRegex(ValueError, 'fresh, unconsumed'):
+            low.execute_trajectory(plan)
+
+        client.stall = False
+        pose = arm.state()['tcp_xyzquat'][:]
+        pose[2] += .006
+        correction = arm.plan([{'pose_xyzquat': pose}], 'Correct from the measured pose')
+        self.assertTrue(low.execute_trajectory(correction)['settle']['settled'])
+        self.assertTrue(client.current['enabled'])
+        self.assertNotIn('stop', [a for a, _ in client.commands])
+
+    def test_reviewed_cartesian_settling_deadline_returns_powered_hold(self):
+        client, clock = TimedWorkbench(), Clock()
+        client.arm = 'left'
+
+        def advance(duration):
+            clock.sleep(duration)
+            if client.current['control_state'] == 'active':
+                offset = .2 if int(clock() * 10) % 2 else -.2
+                client.current['joints_deg'][0] = client.current['command_deg'][0] + offset
+
+        low = R5PolicyBackend(client, Mock(), clock=clock, sleep=advance, stationary_arrival=True)
+        arm = CartesianBackend(low, fixture_profile(), 'both', 'image_grasp')
+        pose = arm.state()['tcp_command_xyzquat'][:]
+        pose[2] += .003
+        plan = arm.plan([{'pose_xyzquat': pose}], 'Offline pose with fluctuating feedback')
+
+        result = low.execute_trajectory(plan)
+
+        self.assertFalse(result['settle']['settled'])
+        self.assertEqual(result['settle']['reason'], 'arrival_check_timed_out')
+        elapsed = clock() - low.last_execution_feedback['started_at_s']
+        self.assertGreaterEqual(elapsed, REVIEWED_POSE_SETTLE_TIMEOUT_S)
+        self.assertLess(elapsed, REVIEWED_POSE_SETTLE_TIMEOUT_S + 1.)
+        self.assertEqual(result['control_state'], 'holding')
+        self.assertIsNone(low.fault)
+        self.assertTrue(client.current['enabled'])
         self.assertNotIn('stop', [a for a, _ in client.commands])
 
     def test_stationary_history_rejects_gaps_drift_and_wrong_command(self):

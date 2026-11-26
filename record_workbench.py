@@ -10,6 +10,7 @@ import time
 import queue
 import urllib.error
 import urllib.request
+from contextlib import ExitStack
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -17,6 +18,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from app import Handler, ROOT, MAX_COMMAND_BYTES, MAX_TRAJECTORY_BYTES
 from demonstrations import Demonstrations
+from workbench_arms import ARM_BY_CHANNEL, ARM_CHANNELS
 
 
 class Upstream:
@@ -147,15 +149,18 @@ class RecordingWorkbench(ThreadingHTTPServer):
         if right_upstream and right_upstream.rstrip('/') == upstream.rstrip('/'):
             raise ValueError('Left and right upstreams must differ.')
         self.upstream = Upstream(upstream)
-        self.arms = {'left': self.upstream}
+        self.recording_arm = ARM_BY_CHANNEL['can0']
+        self.secondary_arm = ARM_BY_CHANNEL['can1']
+        self.arms = {self.recording_arm: self.upstream}
         if right_upstream:
-            self.arms['right'] = Upstream(right_upstream)
+            self.arms[self.secondary_arm] = Upstream(right_upstream)
         if paired_policy_client and (not right_upstream or not re.fullmatch(r'dual-policy-[a-f0-9]{32}', paired_policy_client)):
             raise ValueError('Paired policy needs two upstreams and a unique dual-policy client ID')
         self.paired_policy_client = paired_policy_client
         self.controller = self.upstream
         self.cameras = CameraRouter(list(self.arms.values()))
-        self.lock = threading.RLock()
+        self.lock = threading.RLock()  # Also used by the legacy /api/state handler.
+        self.command_locks = {arm: threading.Lock() for arm in self.arms}
         self.token = secrets.token_urlsafe(32)
         self.recorder = Demonstrations(directory, self.upstream.snapshot, self.cameras)
         self.upstream.recorder = self.recorder
@@ -163,16 +168,25 @@ class RecordingWorkbench(ThreadingHTTPServer):
 
     def arm_snapshot(self, arm):
         state = self.arms[arm].snapshot()
-        expected = 'can0' if arm == 'left' else 'can1'
+        expected = ARM_CHANNELS[arm]
         if state.get('simulation') is not True and state.get('channel') != expected:
             raise ValueError(f'{arm} upstream must use {expected}; command routing blocked')
         return state
 
     def arm_command(self, arm, data):
-        with self.lock:
+        action = data.get('action')
+        paired = bool(self.paired_policy_client and data.get('client') == self.paired_policy_client)
+        # Only the reserved owner's plain keepalive can run alongside its peer.
+        # Other commands take both locks in the same order for atomic peer checks.
+        if paired and action == 'heartbeat' and data.keys() == {'action', 'client'}:
+            command_locks = (self.command_locks[arm],)
+        else:
+            command_locks = (self.lock, *self.command_locks.values())
+        with ExitStack() as locks:
+            for lock in command_locks:
+                locks.enter_context(lock)
             current = self.arm_snapshot(arm)
-            if data.get('action') not in ('stop', 'disconnect'):
-                paired = bool(self.paired_policy_client and data.get('client') == self.paired_policy_client)
+            if action not in ('stop', 'disconnect'):
                 if paired:
                     self.check_paired_command(data, current)
                 for other in self.arms:
@@ -186,8 +200,8 @@ class RecordingWorkbench(ThreadingHTTPServer):
                     if (state.get('enabled') and not paired) or state.get('robot_status') == 'initializing':
                         raise ValueError('另一只机械臂正在使能或初始化；当前工作台一次只控制一只臂')
                 episode = self.recorder.status().get('episode')
-                if arm == 'right' and episode and episode.get('status') in ('recording', 'saving'):
-                    raise ValueError('当前录制仅包含左臂；请先完成录制再控制右臂')
+                if arm != self.recording_arm and episode and episode.get('status') in ('recording', 'saving'):
+                    raise ValueError('当前录制仅包含右臂（can0）。请先完成录制再控制左臂（can1）。')
             self.arms[arm].command(data)
             return self.arm_snapshot(arm)
 
@@ -230,22 +244,35 @@ class RecordingHandler(Handler):
             if path == '/api/arms':
                 def snapshot(arm):
                     try:
-                        return {'id': arm, 'state': self.server.arm_snapshot(arm), 'error': None}
+                        state, error = self.server.arm_snapshot(arm), None
                     except (ValueError, OSError) as exc:
-                        return {'id': arm, 'state': None, 'error': str(exc)}
+                        state, error = None, str(exc)
+                    channel = ARM_CHANNELS[arm]
+                    return {'id': arm, 'channel': channel, 'state': state, 'error': error,
+                            'command_path': f'/api/arms/{arm}/{channel}/command',
+                            'wrist_camera_path': f'/api/arms/{arm}/camera/frame.jpg'}
                 with ThreadPoolExecutor(max_workers=2) as pool:
-                    arms = list(pool.map(snapshot, self.server.arms))
+                    ids = (arm for arm in ARM_CHANNELS if arm in self.server.arms)
+                    arms = list(pool.map(snapshot, ids))
                 return self.send(200, {'arms': arms, 'control_mode': (
                                        'reserved_paired_policy' if self.server.paired_policy_client else 'one_arm_at_a_time'),
                                        'paired_policy_client': self.server.paired_policy_client,
-                                       'recording_arm': 'left'})
+                                       'recording_arm': self.server.recording_arm})
+            parts = path.split('/')
             if path == '/api/cameras/gemini_right/frame.jpg':
-                if 'right' not in self.server.arms:
-                    return self.send(404, {'error': '未配置右臂相机'})
-                frame, sequence, device = self.server.arms['right'].get('gemini')
+                # Preserve the historical camera alias for existing recordings.
+                camera_arm = self.server.secondary_arm
+            elif len(parts) == 6 and parts[1:3] == ['api', 'arms'] and parts[4:] == ['camera', 'frame.jpg']:
+                camera_arm = parts[3]
+            else:
+                camera_arm = None
+            if camera_arm is not None:
+                source = self.server.arms.get(camera_arm)
+                if source is None:
+                    return self.send(404, {'error': '未配置该机械臂的腕相机'})
+                frame, sequence, device = source.get('gemini')
                 return self.send(200, frame, 'image/jpeg',
                                  {'X-Frame-Id': sequence, 'X-Camera-Device': device})
-            parts = path.split('/')
             if len(parts) == 5 and parts[1:3] == ['api', 'arms'] and parts[4] == 'state':
                 if parts[3] not in self.server.arms:
                     return self.send(404, {'error': '未知机械臂'})
@@ -283,7 +310,7 @@ class RecordingHandler(Handler):
     def do_POST(self):
         path = urlsplit(self.path).path
         parts = path.split('/')
-        arm_route = len(parts) == 5 and parts[1:3] == ['api', 'arms'] and parts[4] == 'command'
+        arm_route = len(parts) in (5, 6) and parts[1:3] == ['api', 'arms'] and parts[-1] == 'command'
         legacy_command = path == '/api/command'
         if not path.startswith('/api/recording/') and not arm_route and not legacy_command:
             return super().do_POST()
@@ -303,16 +330,19 @@ class RecordingHandler(Handler):
             if arm_route or legacy_command:
                 if size > MAX_COMMAND_BYTES and data.get('action') != 'policy_trajectory':
                     raise ValueError('请求过大')
-                arm = parts[3] if arm_route else 'left'
+                arm = parts[3] if arm_route else self.server.recording_arm
                 if arm not in self.server.arms:
                     return self.send(404, {'error': '未知机械臂'})
+                if arm_route and (len(parts) != 6 or parts[4] != ARM_CHANNELS[arm]):
+                    return self.send(409, {'error': '机械臂 ID 与 CAN 通道必须匹配。请使用 /api/arms 公布的 command_path。'})
                 return self.send(200, self.server.arm_command(arm, data))
             recorder = self.server.recorder
             if path == '/api/recording/start':
-                if 'right' in self.server.arms:
-                    right = self.server.arm_snapshot('right')
-                    if right.get('enabled') or right.get('robot_status') == 'initializing':
-                        raise ValueError('右臂正在控制；当前示范录制仅包含左臂')
+                other = self.server.secondary_arm
+                if other in self.server.arms:
+                    state = self.server.arm_snapshot(other)
+                    if state.get('enabled') or state.get('robot_status') == 'initializing':
+                        raise ValueError('左臂（can1）正在控制。当前示范录制仅包含右臂（can0）。')
                 result = recorder.start(data.get('name', ''))
             elif path == '/api/recording/stop':
                 result = recorder.stop(data.get('result', 'unspecified'))
@@ -329,7 +359,7 @@ def main():
     parser = argparse.ArgumentParser(description='Local R5 demonstration recording workbench')
     parser.add_argument('--port', type=int, default=8768)
     parser.add_argument('--upstream', default='http://127.0.0.1:8765')
-    parser.add_argument('--right-upstream', help='Optional right-arm workbench, using can1')
+    parser.add_argument('--right-upstream', help='Optional second upstream on can1 (public arm ID: left)')
     parser.add_argument('--paired-policy-client', help='Reserve concurrent control for one attended dual-policy owner')
     parser.add_argument('--recordings', type=Path, default=ROOT / 'recordings')
     args = parser.parse_args()

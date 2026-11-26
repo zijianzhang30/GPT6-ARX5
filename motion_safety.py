@@ -10,13 +10,14 @@ GRIPPER_CLOSE_STEP_RAW = 1.0
 GRIPPER_OPEN_SPEED_MULTIPLIER = 5.0
 EMPTY_GRIPPER_OPEN_STEP_RAW = 0.5
 SUPERVISED_SPEED = 0.3
+POLICY_JOINT_SPEED_DEG_S = 10.0
 # Settling leaves headroom for feedback variation during the transition to hold.
 POLICY_SETTLE_ERROR_DEG = 2.5
 POLICY_HOLD_ERROR_DEG = 3.0
 POLICY_TRACKING_ERROR_DEG = 3.0
 POLICY_REVERSE_DEADBAND_DEG = .3
 SESSION_EXCURSION_DEG = 40.0
-SESSION_JOINT_TRAVEL_DEG = 120.0
+SESSION_JOINT_TRAVEL_DEG = 360.0
 SESSION_GRIPPER_TRAVEL_RAW = 5.0
 SESSION_PROPOSALS = 20
 
@@ -61,12 +62,15 @@ def feedback_issues(state, *, require_gripper_target=True):
 
 
 class ProposalGuard:
-    """Session-scoped budget for *unexecuted* suggestions, with latched faults.
+    """Validate proposals and latch faults, with optional session limits.
 
     Travel is the sum of absolute proposed increments, including reversals. It
     is not measured motor travel. Observation cannot reset this budget or fault.
     """
-    def __init__(self):
+    def __init__(self, *, enforce_session_limits=True):
+        if type(enforce_session_limits) is not bool:
+            raise ValueError("enforce_session_limits must be a boolean")
+        self.enforce_session_limits = enforce_session_limits
         self.anchor = None
         self.limits = None
         self.devices = None
@@ -99,7 +103,8 @@ class ProposalGuard:
             self.limits = bounds
         if bounds != self.limits:
             self.fail("Joint limits changed during the session")
-        if max(abs(a - b) for a, b in zip(q, self.anchor)) > SESSION_EXCURSION_DEG:
+        if (self.enforce_session_limits
+                and max(abs(a - b) for a, b in zip(q, self.anchor)) > SESSION_EXCURSION_DEG):
             self.fail("Measured joints left the session envelope")
         self._check_margin(q)
 
@@ -136,7 +141,8 @@ class ProposalGuard:
                     f"{JOINT_STEP_NORM_DEG:g} deg norm"
                 )
             self._check_margin(q)
-            if max(abs(a - b) for a, b in zip(q, self.anchor)) > SESSION_EXCURSION_DEG:
+            if (self.enforce_session_limits
+                    and max(abs(a - b) for a, b in zip(q, self.anchor)) > SESSION_EXCURSION_DEG):
                 self.fail("Proposed target leaves the session envelope")
             joint_cost = sum(map(abs, delta))
         else:
@@ -147,30 +153,33 @@ class ProposalGuard:
             limit = gripper_step_limit(grip, state['gripper_target_raw'])
             if gripper_cost > limit + 1e-9:
                 self.fail(f"Gripper step exceeds {limit:g} vendor raw units in this direction")
-        if self.proposals >= SESSION_PROPOSALS:
-            self.fail("Session proposal count exhausted")
-        if self.joint_travel + joint_cost > SESSION_JOINT_TRAVEL_DEG + 1e-9:
-            self.fail("Session joint travel budget exhausted")
-        if self.gripper_travel + gripper_cost > SESSION_GRIPPER_TRAVEL_RAW + 1e-9:
-            self.fail("Session gripper travel budget exhausted")
+        if self.enforce_session_limits:
+            if self.proposals >= SESSION_PROPOSALS:
+                self.fail("Session proposal count exhausted")
+            if self.joint_travel + joint_cost > SESSION_JOINT_TRAVEL_DEG + 1e-9:
+                self.fail("Session joint travel budget exhausted")
+            if self.gripper_travel + gripper_cost > SESSION_GRIPPER_TRAVEL_RAW + 1e-9:
+                self.fail("Session gripper travel budget exhausted")
         self.joint_travel += joint_cost
         self.gripper_travel += gripper_cost
         self.proposals += 1
         return self.snapshot()
 
     def snapshot(self):
+        limits = {"joint_step_deg": JOINT_STEP_DEG,
+                  "joint_step_norm_deg": JOINT_STEP_NORM_DEG,
+                  "joint_margin_deg": JOINT_MARGIN_DEG,
+                  "gripper_step_raw": GRIPPER_STEP_RAW,
+                  "gripper_close_step_raw": GRIPPER_CLOSE_STEP_RAW}
+        if self.enforce_session_limits:
+            limits.update(session_excursion_deg=SESSION_EXCURSION_DEG,
+                          session_joint_travel_deg=SESSION_JOINT_TRAVEL_DEG,
+                          session_gripper_travel_raw=SESSION_GRIPPER_TRAVEL_RAW,
+                          session_proposals=SESSION_PROPOSALS)
         return {"fault_latched": self.failure, "anchor_joints_deg": self.anchor,
                 "accepted_proposals": self.proposals,
                 "proposed_joint_travel_deg": self.joint_travel,
                 "proposed_gripper_travel_raw": self.gripper_travel,
-                "limits": {"joint_step_deg": JOINT_STEP_DEG,
-                           "joint_step_norm_deg": JOINT_STEP_NORM_DEG,
-                           "joint_margin_deg": JOINT_MARGIN_DEG,
-                           "gripper_step_raw": GRIPPER_STEP_RAW,
-                           "gripper_close_step_raw": GRIPPER_CLOSE_STEP_RAW,
-                           "session_excursion_deg": SESSION_EXCURSION_DEG,
-                           "session_joint_travel_deg": SESSION_JOINT_TRAVEL_DEG,
-                           "session_gripper_travel_raw": SESSION_GRIPPER_TRAVEL_RAW,
-                           "session_proposals": SESSION_PROPOSALS},
+                "limits": limits,
                 "physical_stop_validated": False, "collision_checked": False,
                 "execution_available": False}

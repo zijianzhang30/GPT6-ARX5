@@ -60,17 +60,17 @@ class MotionSafetyTests(unittest.TestCase):
         for index in range(15):
             target = sample['joints_deg'].copy()
             sign = 1 if index % 2 == 0 else -1
-            target[0] += 4*sign
-            target[1] += 4*sign
+            target[0] += 12*sign
+            target[1] += 12*sign
             guard.accept(sample, {'joints_deg': target})
             sample['joints_deg'] = target
-        self.assertEqual(guard.joint_travel, 120)
+        self.assertEqual(guard.joint_travel, 360)
         target = sample['joints_deg'].copy()
-        target[0] -= 4
-        target[1] -= 4
+        target[0] -= 12
+        target[1] -= 12
         with self.assertRaisesRegex(ValueError, 'travel budget'):
             guard.accept(sample, {'joints_deg': target})
-        self.assertEqual(guard.joint_travel, 120)
+        self.assertEqual(guard.joint_travel, 360)
 
     def test_proposal_count_includes_noops(self):
         guard, sample = ProposalGuard(), state()

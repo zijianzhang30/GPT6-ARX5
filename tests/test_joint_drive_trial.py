@@ -2,6 +2,7 @@ import unittest
 from unittest.mock import patch
 
 from joint_drive_trial import ArmClient, trial_targets
+from visual_control import ArmWorkbenchClient
 
 
 class JointDriveTrialTests(unittest.TestCase):
@@ -18,17 +19,20 @@ class JointDriveTrialTests(unittest.TestCase):
         self.assertEqual(reference, [0, 20, 30, -15, 0, 0])
 
     def test_right_client_routes_state_commands_and_camera_explicitly(self):
-        client = ArmClient('http://127.0.0.1:8768', 'right')
-        with patch.object(client, 'request') as request:
-            client.state()
-            self.assertEqual(request.call_args.args[0], '/api/arms/right/state')
-            client.command('stop')
-            self.assertEqual(request.call_args.args[0], '/api/arms/right/command')
-        with patch('visual_control.WorkbenchClient.camera') as camera:
-            client.camera('gemini')
-            camera.assert_called_once_with('gemini_right')
-            client.camera('external')
-            self.assertEqual(camera.call_args.args, ('external',))
+        for client_class, arm, channel in (
+            (ArmClient, 'left', 'can1'), (ArmWorkbenchClient, 'right', 'can0')
+        ):
+            client = client_class('http://127.0.0.1:8768', 'right')
+            with patch.object(client, 'request', return_value={'channel': channel}) as request:
+                client.state()
+                self.assertEqual(request.call_args.args[0], f'/api/arms/{arm}/state')
+                client.command('stop')
+                self.assertEqual(request.call_args.args[0], f'/api/arms/{arm}/{channel}/command')
+            with patch.object(client, 'camera_path') as camera:
+                client.camera('gemini')
+                camera.assert_called_once_with(f'/api/arms/{arm}/camera/frame.jpg')
+                client.camera('external')
+                self.assertEqual(camera.call_args.args, ('/api/cameras/external/frame.jpg',))
 
     def test_invalid_arm_or_reference_is_rejected(self):
         with self.assertRaises(ValueError):

@@ -20,13 +20,13 @@ ADAPTER = '/dev/serial/by-id/usb-Openlight_Labs_CANable2_b158aa7_github.com_norm
 
 def preflight():
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-    for side, channel in (('left', 'can0'), ('right', 'can1')):
+    for side, channel in (('right', 'can0'), ('left', 'can1')):
         with opener.open(f'http://127.0.0.1:8768/api/arms/{side}/state', timeout=2) as response:
             state = json.load(response)
         if (state.get('simulation') is not False or state.get('channel') != channel
                 or state.get('enabled') is not False or state.get('moving') is not False
                 or state.get('owner') is not None or state.get('robot_status') == 'initializing'
-                or (side == 'left' and state.get('worker_running') is not False)):
+                or (channel == 'can0' and state.get('worker_running') is not False)):
             raise RuntimeError(f'{side}: requires disabled, unowned, stationary state; left SDK must be disconnected')
     if not Path(ADAPTER).is_char_device():
         raise RuntimeError('Expected left adapter serial number is missing')

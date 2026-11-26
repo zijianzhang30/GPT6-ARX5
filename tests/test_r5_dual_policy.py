@@ -5,6 +5,7 @@ import tempfile
 import threading
 from types import SimpleNamespace
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import MagicMock, patch
 
 from r5_cartesian import CartesianAgent, CartesianBackend
@@ -201,8 +202,10 @@ class PairedProxyTests(unittest.TestCase):
     def setUp(self):
         self.server = object.__new__(RecordingWorkbench)
         self.server.lock = threading.RLock()
+        self.server.command_locks = {side: threading.Lock() for side in ARMS}
         self.owner = 'dual-policy-' + 'a'*32
         self.server.paired_policy_client = self.owner
+        self.server.recording_arm = 'right'
         self.server.recorder = MagicMock()
         self.server.recorder.status.return_value = {}
         self.server.arms = {side: MagicMock() for side in ARMS}
@@ -215,6 +218,27 @@ class PairedProxyTests(unittest.TestCase):
             self.server.arm_command(side, {'action': 'heartbeat', 'client': self.owner})
             self.server.arms[side].command.assert_called_once()
 
+    def test_reserved_heartbeat_can_complete_while_peer_heartbeat_is_in_flight(self):
+        request = {'action': 'heartbeat', 'client': self.owner}
+        peer_started, peer_release = threading.Event(), threading.Event()
+
+        def wait_for_peer_release(_):
+            peer_started.set()
+            if not peer_release.wait(timeout=3):
+                raise TimeoutError('Test did not release the peer heartbeat')
+
+        self.server.arms['right'].command.side_effect = wait_for_peer_release
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            peer = pool.submit(self.server.arm_command, 'right', request)
+            try:
+                self.assertTrue(peer_started.wait(timeout=1))
+                response = pool.submit(self.server.arm_command, 'left', request)
+                self.assertEqual(response.result(timeout=1), self.states['left'])
+                self.assertFalse(peer.done())
+            finally:
+                peer_release.set()
+            peer.result(timeout=1)
+
     def test_manual_client_stays_interlocked_and_jog_is_blocked(self):
         for data in ({'action': 'enable', 'client': 'manual'},
                      {'action': 'heartbeat', 'client': self.owner, 'jog': [1]*6},
@@ -224,12 +248,13 @@ class PairedProxyTests(unittest.TestCase):
                 self.server.arm_command('left', data)
         self.server.arms['left'].command.assert_not_called()
 
-    def test_foreign_or_faulted_peer_blocks_paired_enable_but_not_stop(self):
+    def test_foreign_or_faulted_peer_blocks_paired_enable_and_heartbeat_but_allows_stop(self):
         for update in ({'owner': 'manual'}, {'robot_status': 'fault'}, {'error_codes': [5]}):
             original = copy.deepcopy(self.states['right'])
             self.states['right'].update(update)
-            with self.assertRaises(ValueError):
-                self.server.arm_command('left', {'action': 'enable', 'client': self.owner})
+            for action in ('enable', 'heartbeat'):
+                with self.assertRaises(ValueError):
+                    self.server.arm_command('left', {'action': action, 'client': self.owner})
             self.server.arm_command('left', {'action': 'stop', 'client': 'manual'})
             self.states['right'] = original
 

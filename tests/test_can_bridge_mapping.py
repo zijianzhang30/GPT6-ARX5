@@ -23,8 +23,8 @@ class CanBridgeMappingTests(unittest.TestCase):
         (self.root / 'sys/class/net/can0').mkdir(parents=True)
         self.states = {side: dict(simulation=False, channel=channel, enabled=False,
                                  moving=False, owner=None, robot_status='fault',
-                                 worker_running=side == 'right')
-                       for side, channel in [('left', 'can0'), ('right', 'can1')]}
+                                 worker_running=channel == 'can1')
+                       for side, channel in [('right', 'can0'), ('left', 'can1')]}
         self.left = ['/usr/bin/slcand', '-o', '-f', '-s8', rebuild.ADAPTER, 'can0']
         self.right = ['/usr/bin/slcand', '-o', '-f', '-s8',
                       rebuild.ADAPTER.replace('2088335E5931', '208833765931'), 'can1']

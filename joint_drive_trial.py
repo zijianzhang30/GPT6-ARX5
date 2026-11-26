@@ -15,7 +15,7 @@ from r5_policy_backend import R5PolicyBackend
 from r5_policy_deployment import R5Cameras
 from r5_policy_supervisor import R5PolicySupervisor, SupervisedCameras
 from supervised_policy import prepare_hold, check_tracking_contract, close_host
-from visual_control import ArmWorkbenchClient as ArmClient
+from visual_control import ProfileArmWorkbenchClient as ArmClient
 
 
 def trial_targets(reference, step_deg=2., joints=None):

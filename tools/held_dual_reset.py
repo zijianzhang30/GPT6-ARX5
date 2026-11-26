@@ -19,7 +19,7 @@ from r5_policy_backend import R5PolicyBackend
 from r5_policy_deployment import R5DualCameras
 from r5_policy_supervisor import R5PolicySupervisor, SupervisedCameras
 from supervised_policy import open_empty_gripper
-from visual_control import ArmWorkbenchClient
+from visual_control import ProfileArmWorkbenchClient as ArmWorkbenchClient
 
 
 def main():

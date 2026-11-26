@@ -4,8 +4,12 @@ const token = document.querySelector('meta[name="control-token"]').content;
 const client = crypto.randomUUID();
 let state = null, selected = 0, keys = new Set(), held = null, busy = false, lastOk = 0;
 let dirty = new Set(), gripDirty = false, toastTimer, dragging = null;
-let dualMode = false, selectedArm = 'left', inFlightCommands = 0;
-function controlPath(endpoint, arm=selectedArm) { return dualMode ? `/api/arms/${arm}/${endpoint}` : `/api/${endpoint}`; }
+let dualMode = false, selectedArm = 'right', inFlightCommands = 0;
+function controlPath(endpoint, arm=selectedArm) {
+  if (!dualMode) return `/api/${endpoint}`;
+  if (endpoint === 'command') return `/api/arms/${arm}/${workbenchArms[arm].channel}/command`;
+  return `/api/arms/${arm}/${endpoint}`;
+}
 const camera = {yaw: -1.05, pitch: .52, zoom: 1};
 const canvas = $('scene'), ctx = canvas.getContext('2d');
 const cameraFeeds = new Map();
@@ -98,12 +102,12 @@ function commandVector(){const jog=[0,0,0,0,0,0];let gripper=0;
 }
 let savedSignature='',eventSignature='';
 function render(s){state=s;
-  if(dualMode){$('active-arm-label').textContent=`${selectedArm==='left'?'左臂':'右臂'}的关节、夹爪和末端控制`;$('active-arm').disabled=!!s.enabled||s.robot_status==='initializing'||inFlightCommands>0;}
+  if(dualMode){$('active-arm-label').textContent=`${workbenchArms[selectedArm].name}的关节、夹爪和末端控制`;$('active-arm').disabled=!!s.enabled||s.robot_status==='initializing'||inFlightCommands>0;}
   const live=!s.simulation;
   $('mode-badge').textContent=live?'实机模式':'离线模拟';
   $('connect').hidden=!live;
   $('connect').disabled=live&&s.worker_running;
-  $('connect').textContent=s.robot_status==='initializing'?'初始化中…':dualMode?`连接${selectedArm==='left'?'左臂':'右臂'}`:'连接机械臂';
+  $('connect').textContent=s.robot_status==='initializing'?'初始化中…':dualMode?`连接${workbenchArms[selectedArm].name}`:'连接机械臂';
   $('disconnect').hidden=!live||!s.worker_running||s.robot_status==='initializing';
   $('reset').hidden=live;$('save-pose').hidden=live;$('export').hidden=live;
   $('enable').disabled=live&&!s.model_ready;
@@ -122,7 +126,7 @@ function render(s){state=s;
     return;
   }
 
-  $('enable').textContent=s.enabled?'控制已启用 · 点击暂停':dualMode?`启用${selectedArm==='left'?'左臂':'右臂'}`:'启用控制';
+  $('enable').textContent=s.enabled?'控制已启用 · 点击暂停':dualMode?`启用${workbenchArms[selectedArm].name}`:'启用控制';
   $('motion-state').textContent=s.enabled?(s.moving?'移动中':'已启用 · 就绪'):'已暂停';
   $('connection').textContent=live?`● CAN RX ${s.rx_count} · ${s.rx_age_ms} ms`:'● 本地服务已连接';$('notice').textContent=s.message;
   $('speed-value').textContent=Math.round(s.speed*100)+'%';

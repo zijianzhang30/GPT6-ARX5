@@ -9,9 +9,13 @@ from pathlib import Path
 from socketserver import StreamRequestHandler, ThreadingUnixStreamServer
 from threading import Lock, Thread
 
-CAMERAS = {'overview': 'top', 'left_wrist': 'left', 'right_wrist': 'right'}
-PORTABLE_FRAME = 'left_base'
+from workbench_arms import ARM_CHANNELS, PROFILE_WORKBENCH_ARM
+
+# The review host still loads the original per-channel profiles and image keys.
+CAMERAS = {'overview': 'top', 'left_wrist': 'right', 'right_wrist': 'left'}
+ARM_FRAMES = {side: f'{side}_base' for side in ARM_CHANNELS}
 MOTION_TOOLS = ('cap_move_to_pose', 'cap_set_gripper')
+MOTION_WIRE_PREFIX = 'v2.'
 HOST_TIMEOUT_S = 175
 MAX_REQUEST_BYTES = 16384
 
@@ -112,41 +116,49 @@ def vector(value, length):
     raise ValueError(f'Expected a list of {length} finite numbers')
 
 
-def native_command(request):
+def native_command(request, working_profile):
     args = request.arguments
     note = args.get('note')
-    if args.get('arm', 'left') != 'left' or not isinstance(note, str) or not note.strip():
-        raise ValueError('Provide arm=left and a note describing the observed clearance or contact')
+    arm = PROFILE_WORKBENCH_ARM[working_profile]
+    frame = ARM_FRAMES[arm]
+    if args.get('arm') != arm or not isinstance(note, str) or not note.strip():
+        raise ValueError(f'Provide arm={arm} and a note describing the observed clearance or contact')
     if request.tool == 'cap_move_to_pose':
         if set(args) - {'arm', 'note', 'observation_id', 'target_pose'}:
             raise ValueError('Unsupported pose arguments')
         pose = args.get('target_pose')
         if (not isinstance(pose, dict) or set(pose) != {'position', 'quaternion_wxyz', 'frame'}
-                or pose['frame'] != PORTABLE_FRAME):
-            raise ValueError('Use position, quaternion_wxyz and frame=left_base')
+                or pose['frame'] != frame):
+            raise ValueError(f'Use position, quaternion_wxyz and frame={frame}')
         xyz = vector(pose['position'], 3)
         w, x, y, z = vector(pose['quaternion_wxyz'], 4)
         if abs(math.hypot(w, x, y, z) - 1) > 1e-3:
             raise ValueError('The quaternion must have unit length')
-        return {'tool': 'move_to', 'arguments': {
-            'target': {'left': {'pose_xyzquat': [*xyz, x, y, z, w]}, 'right': None}, 'note': note}}
+        target = dict.fromkeys(PROFILE_WORKBENCH_ARM)
+        target[working_profile] = {'pose_xyzquat': [*xyz, x, y, z, w]}
+        return {'tool': 'move_to', 'arguments': {'target': target, 'note': note}}
     if request.tool == 'cap_set_gripper':
         if set(args) - {'arm', 'note', 'observation_id', 'position'}:
             raise ValueError('Unsupported gripper arguments')
         opening = vector([args.get('position')], 1)[0]
         if not 0 <= opening <= 1:
             raise ValueError('Use a normalized opening between 0 and 1')
-        return {'tool': 'set_gripper', 'arguments': {
-            'positions': {'left': opening, 'right': None}, 'note': note}}
+        positions = dict.fromkeys(PROFILE_WORKBENCH_ARM)
+        positions[working_profile] = opening
+        return {'tool': 'set_gripper', 'arguments': {'positions': positions, 'note': note}}
     raise ValueError('Unsupported motion tool')
 
 
 def public_observation(packet):
     arms = {}
-    for name, arm in packet['arms'].items():
+    for profile, arm in packet['arms'].items():
+        name = PROFILE_WORKBENCH_ARM[profile]
+        channel = ARM_CHANNELS[name]
+        if arm.get('channel') != channel:
+            raise ValueError(f'Expected {name} feedback from {channel}')
         x, y, z, qx, qy, qz, qw = arm['measured_tcp']
         arms[name] = {
-            'frame': f'{name}_base', 'tcp_position_m': [x, y, z],
+            'channel': channel, 'frame': ARM_FRAMES[name], 'tcp_position_m': [x, y, z],
             'tcp_quaternion_wxyz': [qw, qx, qy, qz], 'joints_deg': arm['joints_deg'],
             'gripper_measured_normalized': arm['measured_opening'],
             'gripper_command_normalized': arm['opening'],
@@ -177,9 +189,18 @@ class AspireReview:
             if request.arguments:
                 raise ValueError('Host observe takes no arguments')
             return {'ok': True, 'status': 'observed', 'observation': self.observe(capture)}
-        if not self.allow_motion or working_side != 'left':
-            raise ValueError('Motion requires the left working arm and explicit host motion enablement')
-        command = native_command(request)
+        if request.tool == 'capabilities':
+            if request.arguments:
+                raise ValueError('Host capabilities takes no arguments')
+            arm = PROFILE_WORKBENCH_ARM[working_side]
+            return {'ok': True, 'protocol': 2, 'motion_arm': arm, 'motion_frame': ARM_FRAMES[arm],
+                    'motion_enabled': self.allow_motion}
+        if not self.allow_motion:
+            raise ValueError('Motion requires explicit host motion enablement')
+        if request.tool not in tuple(MOTION_WIRE_PREFIX + tool for tool in MOTION_TOOLS):
+            raise ValueError('Use an updated ASPIRE client for the workbench arm convention')
+        command = native_command(
+            AspireRequest(request.tool.removeprefix(MOTION_WIRE_PREFIX), request.arguments), working_side)
         if not self.current or request.arguments.get('observation_id') != self.current:
             raise ValueError('Read a fresh observation and use its observation_id')
         self.current = None
@@ -189,8 +210,12 @@ class AspireReview:
             observation = self.observe(capture)
         except Exception as exc:
             raise RuntimeError('Post-action observation failed; inspect the host before another command') from exc
-        arm = result['arms']['left']
-        return {'ok': True, 'status': 'review_completed', 'observation': observation,
-                'receipt': {'control_state': arm['control_state'], 'settle': arm['settle'],
+        arm = result['arms'][working_side]
+        public_arm = PROFILE_WORKBENCH_ARM[working_side]
+        status = 'correction_required' if arm['settle']['settled'] is False else 'review_completed'
+        return {'ok': True, 'status': status, 'observation': observation,
+                'receipt': {'arm': public_arm, 'channel': ARM_CHANNELS[public_arm],
+                            'frame': ARM_FRAMES[public_arm], 'control_state': arm['control_state'],
+                            'settle': arm['settle'],
                             'tracking_residual_deg': arm.get('tracking_residual_deg'),
                             'collision_checked': False, 'grasp_verified': False}}

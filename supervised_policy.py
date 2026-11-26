@@ -16,7 +16,7 @@ from policy_runner import new_agent, upstream_config
 from r5_policy_backend import R5PolicyBackend
 from r5_policy_deployment import R5Cameras, run_r5_policy
 from r5_policy_supervisor import R5PolicySupervisor, SupervisedCameras
-from visual_control import ArmWorkbenchClient, WorkbenchClient, check_state
+from visual_control import ProfileArmWorkbenchClient as ArmWorkbenchClient, WorkbenchClient, check_state
 from motion_safety import (finite, SUPERVISED_SPEED, POLICY_SETTLE_ERROR_DEG,
                            POLICY_HOLD_ERROR_DEG, POLICY_TRACKING_ERROR_DEG,
                            JOINT_STEP_DEG, JOINT_STEP_NORM_DEG,

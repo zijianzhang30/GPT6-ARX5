@@ -84,7 +84,8 @@ class DeploymentTests(unittest.TestCase):
         left = self.robot.state()
         right = self.robot.state()
         self.assertEqual(motion_budget_headroom({'arms': {'left': left, 'right': right}}), {})
-        right['motion_budget']['proposed_joint_travel_deg'] = 115.2465
+        budget = right['motion_budget']
+        budget['proposed_joint_travel_deg'] = budget['limits']['session_joint_travel_deg']-4.7535
         before = self.robot.guard.snapshot()
         headroom = motion_budget_headroom({'arms': {'left': left, 'right': right}})
         self.assertEqual(set(headroom), {'right'})

@@ -33,7 +33,8 @@ from dual_return_pose import return_plan
 from r5_sequential_trial import LeftReturnGate, WorkingArmGate, require_idle, renew_sequential_segment
 from review_telemetry import ReviewTimer, review_packet
 from reviewed_return import ReviewedReturn
-from visual_control import ArmWorkbenchClient
+from visual_control import ProfileArmWorkbenchClient as ArmWorkbenchClient
+from workbench_arms import WORKBENCH_PROFILE_ARM
 from gpt_policy.motion.coordination import TrajectoryIKError
 
 
@@ -131,11 +132,11 @@ def main():
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument('--left-return-before-right', action='store_true')
     mode.add_argument('--working-arm', choices=('left', 'right'),
-                      help='Only this arm can receive targets; switch explicitly after visual review')
+                        help='Only this arm can receive targets; ASPIRE uses workbench arm IDs')
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--aspire-socket', type=Path, help='Optional strictly local System 2 endpoint')
     parser.add_argument('--aspire-allow-motion', action='store_true',
-                        help='Allow bounded left-arm System 2 requests over the local socket')
+                        help='Allow bounded single-arm System 2 requests over the local socket')
     parser.add_argument('--paired-client', required=True)
     parser.add_argument('--url', default='http://127.0.0.1:8768')
     parser.add_argument('--adopt-arm', choices=('left', 'right'))
@@ -152,9 +153,10 @@ def main():
     probe_mode = args.one_empty_left_probe or args.one_empty_left_joint_diagnostic
     if args.aspire_allow_motion and not args.aspire_socket:
         parser.error('--aspire-allow-motion requires --aspire-socket')
-    if args.aspire_socket and (args.working_arm != 'left' or probe_mode):
-        parser.error('--aspire-socket requires ordinary --working-arm left mode')
+    if args.aspire_socket and (not args.working_arm or probe_mode):
+        parser.error('--aspire-socket requires ordinary single --working-arm mode')
     if args.aspire_socket:
+        args.working_arm = WORKBENCH_PROFILE_ARM[args.working_arm]
         try:
             args.aspire_socket = validate_socket_path(args.aspire_socket)
         except (OSError, ValueError) as exc:
@@ -208,6 +210,8 @@ def main():
                                   else EmptyFineProbeBackend if args.one_empty_left_probe and s == 'left'
                                   else R5PolicyBackend)(clients[s], cameras.check,
                                  retain_settle_fault_hold=args.retain_settle_fault_hold,
+                                 enforce_session_limits=args.aspire_socket is None,
+                                 stationary_arrival=args.aspire_socket is not None,
                                  minimum_cartesian_command_step_deg=args.minimum_cartesian_command_step_deg), profiles[s], 'both', 'image_grasp',
                                  tracking_reserve_deg=args.tracking_reserve_deg) for s in ARMS}
     camera_gates = {s: StationaryCameraGate(cameras, robots[s].backend) for s in ARMS}
@@ -292,6 +296,7 @@ def main():
             if aspire:
                 for side, arm in packet['arms'].items():
                     arm['measured_opening'] = state['arms'][side]['gripper_normalized']
+                    arm['channel'] = state['arms'][side]['raw_state']['channel']
             packet['working_arm'] = working.side if working else None
             packet['capture_wall_s'] = time.monotonic()-began
             packet['timing_before_current_command_finishes'] = timer.summary()
@@ -349,7 +354,8 @@ def main():
                 handoff.close()
             supervisor.start()
             log('planning_configuration', {'tracking_reserve_deg': args.tracking_reserve_deg,
-                                            'retain_settle_fault_hold': args.retain_settle_fault_hold,
+                                            'retain_settle_fault_hold': bool(args.retain_settle_fault_hold or args.aspire_socket),
+                                            'stationary_arrival': args.aspire_socket is not None,
                                             'fault_fallback_hardware_validated': False,
                                             'minimum_cartesian_command_step_deg': args.minimum_cartesian_command_step_deg,
                                             'one_empty_left_probe': args.one_empty_left_probe,
@@ -373,13 +379,15 @@ def main():
             if probe_mode:
                 name = 'diagnose-empty-left-j3' if args.one_empty_left_joint_diagnostic else 'probe-empty-up-3mm'
                 print('DIAGNOSTIC HOLD: observe, renew, '+name+'. One attempt; no task recovery; all further motion locked.', flush=True)
+            elif aspire:
+                print('HOLDING: ASPIRE socket for reviewed actions; terminal accepts observe.', flush=True)
             else:
                 print('HOLDING: observe, renew, open-empty-right/left, or JSON {tool, arguments}. EOF retains hold.', flush=True)
             if gate:
                 print('SEQUENTIAL: verify-left-placement, return-left-step, begin-right, verify-stack, return-right-step. Returns are bounded; visual clearance review required.', flush=True)
             if working:
                 log('working_arm_selected', {'arm': working.side, 'source': 'startup'})
-                if not probe_mode:
+                if not probe_mode and not aspire:
                     print('SINGLE ARM: select-left/right only after visual phase/clearance review; return-working-step after empty-gripper clearance review. No automatic collision or task validation.', flush=True)
                     print('REVIEWED RETURN: reviewed-return-step {observation_id, empty_gripper, path_clear, recording_active, note}; one segment per fresh visual review; never a fault handler.', flush=True)
             while True:
@@ -402,6 +410,9 @@ def main():
                         outcome = 'rejected'
                         log('rejected', {'reason': str(exc)})
                         answer = failure('rejected', str(exc))
+                    except R5PoweredHoldFault as exc:
+                        line.reply.set_result(failure('fault_hold', str(exc)))
+                        raise
                     except BaseException:
                         line.reply.set_result(failure('outcome_unknown',
                             'Review host fault. Inspect state before any further action.'))
@@ -416,6 +427,8 @@ def main():
                 log('review_command_started', timer.begin(label))
                 outcome = 'failed'
                 try:
+                    if aspire and line != 'observe':
+                        raise ValueError('ASPIRE terminal accepts only observe; use the ASPIRE socket for reviewed actions')
                     if probe_mode:
                         require_empty_probe_command(line, args.one_empty_left_joint_diagnostic)
                     if stationary_gated:

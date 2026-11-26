@@ -21,6 +21,7 @@ import cv2
 import numpy as np
 from motion_safety import (ProposalGuard, feedback_issues, finite, vector, JOINT_STEP_DEG,
                            JOINT_STEP_NORM_DEG, JOINT_MARGIN_DEG, gripper_step_limit)
+from workbench_arms import ARM_CHANNELS, PROFILE_WORKBENCH_ARM
 
 
 def detect_ball(jpeg):
@@ -187,7 +188,10 @@ class WorkbenchClient:
         return self.request('/api/command', {'action': action, 'client': self.client, **fields})
 
     def camera(self, key):
-        with self.opener.open(self.base+f'/api/cameras/{key}/frame.jpg', timeout=1) as response:
+        return self.camera_path(f'/api/cameras/{key}/frame.jpg')
+
+    def camera_path(self, path):
+        with self.opener.open(self.base+path, timeout=1) as response:
             return response.read(), response.headers.get('X-Frame-Id'), response.headers.get('X-Camera-Device')
 
 
@@ -195,20 +199,37 @@ class ArmWorkbenchClient(WorkbenchClient):
     """Route one arm's state, commands, and wrist images through the same proxy."""
 
     def __init__(self, base, arm):
-        if arm not in ('left', 'right'):
+        if arm not in ARM_CHANNELS:
             raise ValueError('Explicit left or right arm required')
         super().__init__(base)
         self.arm = arm
+        self.workbench_arm = arm
+        self.channel = ARM_CHANNELS[arm]
 
     def state(self):
-        return self.request(f'/api/arms/{self.arm}/state')
+        state = self.request(f'/api/arms/{self.workbench_arm}/state')
+        if state.get('simulation') is not True and state.get('channel') != self.channel:
+            raise ValueError(f'{self.workbench_arm} must address {self.channel}')
+        return state
 
     def command(self, action, **fields):
-        return self.request(f'/api/arms/{self.arm}/command',
+        return self.request(f'/api/arms/{self.workbench_arm}/{self.channel}/command',
                             {'action': action, 'client': self.client, **fields})
 
     def camera(self, key):
-        return super().camera('gemini_right' if key == 'gemini' and self.arm == 'right' else key)
+        if key == 'gemini':
+            return self.camera_path(f'/api/arms/{self.workbench_arm}/camera/frame.jpg')
+        return super().camera(key)
+
+
+class ProfileArmWorkbenchClient(ArmWorkbenchClient):
+    """Keep existing profile-based workflows routed to their original hardware."""
+
+    def __init__(self, base, arm):
+        if arm not in PROFILE_WORKBENCH_ARM:
+            raise ValueError('Explicit left or right profile arm required')
+        super().__init__(base, PROFILE_WORKBENCH_ARM[arm])
+        self.arm = arm
 
 
 def observe(client, directory):

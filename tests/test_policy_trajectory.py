@@ -5,7 +5,7 @@ import numpy as np
 
 from control import START, LOWER, UPPER
 from live_control import LiveController
-from motion_safety import ProposalGuard
+from motion_safety import ProposalGuard, SESSION_JOINT_TRAVEL_DEG
 from policy_trajectory import (PolicyTrajectory, debit_trajectory, preview_trajectory,
                                check_tracking_reserve)
 from test_policy_adapter import measured_state
@@ -99,8 +99,9 @@ class TrajectoryTests(unittest.TestCase):
         self.assertTrue(np.all(v == 0))
 
     def test_speed_bad_timestamps_and_whole_path_envelope(self):
-        with self.assertRaises(ValueError):
-            self.plan(times=[.01])
+        self.plan(times=[.1])
+        with self.assertRaisesRegex(ValueError, 'joint speed limit of 10 deg/s'):
+            self.plan(times=[.099])
         with self.assertRaises(ValueError):
             self.plan(times=[-1])
         with self.assertRaises(ValueError):
@@ -133,10 +134,40 @@ class TrajectoryTests(unittest.TestCase):
         debit_trajectory(guard, state, [turn, q])
         self.assertEqual(guard.proposals, 1)
         self.assertAlmostEqual(guard.joint_travel, 2)
-        guard.joint_travel = 119
+        guard.joint_travel = SESSION_JOINT_TRAVEL_DEG-2
+        debit_trajectory(guard, state, [turn, q])
+        self.assertEqual(guard.joint_travel, 360.)
         with self.assertRaisesRegex(ValueError, 'budget'):
-            debit_trajectory(guard, state, [turn, q])
-        self.assertEqual(guard.proposals, 1)
+            debit_trajectory(guard, state, [turn])
+        self.assertEqual(guard.proposals, 2)
+
+    def test_review_without_session_limits_keeps_per_action_guards(self):
+        state = measured_state()
+        guard = ProposalGuard(enforce_session_limits=False)
+        for angle in [22, 44, 66] + [44, 66] * 9:
+            end = [angle, *state['joints_deg'][1:]]
+            preview_trajectory(guard, state, [end])
+            debit_trajectory(guard, state, [end])
+            state['joints_deg'] = end
+        self.assertGreater(guard.joint_travel, SESSION_JOINT_TRAVEL_DEG)
+        self.assertGreater(guard.proposals, 20)
+        for opening in [4.25, 4.30] * 52:
+            guard.accept(state, {'gripper_raw': opening})
+            state['gripper_target_raw'] = opening
+        self.assertGreater(guard.gripper_travel, 5.)
+        self.assertEqual(guard.snapshot()['limits']['joint_step_deg'], 24.)
+        self.assertNotIn('session_joint_travel_deg', guard.snapshot()['limits'])
+
+        start = state['joints_deg']
+        with self.assertRaisesRegex(ValueError, 'observed-step envelope') as caught:
+            preview_trajectory(guard, state, [[start[0] + 25, *start[1:]], start])
+        self.assertNotIn('renewal', str(caught.exception))
+        state['joints_deg'] = [147, *start[1:]]
+        with self.assertRaisesRegex(ValueError, 'limit margin'):
+            preview_trajectory(guard, state, [[149, *start[1:]]])
+        with self.assertRaisesRegex(ValueError, 'Gripper step exceeds'):
+            guard.accept(state, {'gripper_raw': 4.5})
+        self.assertIsNotNone(guard.failure)
 
     def test_intermediate_excursion_cannot_hide_behind_nearby_endpoint(self):
         state, guard = measured_state(), ProposalGuard()

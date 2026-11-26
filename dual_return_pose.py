@@ -5,6 +5,7 @@ The default is a read-only preview. Execution requires an idle workbench and
 the reserved paired owner. This host never connects, homes, or calls a model.
 """
 import argparse
+from dataclasses import replace
 import json
 from pathlib import Path
 import queue
@@ -25,12 +26,13 @@ from r5_policy_backend import R5PolicyBackend
 from r5_policy_deployment import R5DualCameras
 from r5_policy_supervisor import R5PolicySupervisor, SupervisedCameras
 from supervised_policy import prepare_hold, wait_for_operator_start
-from visual_control import ArmWorkbenchClient
+from visual_control import ProfileArmWorkbenchClient as ArmWorkbenchClient
 from gpt_policy.motion.trajectory import retime_path_segment
 
 
 RETURN_JOINT_DEG = 6.
 RETURN_NORM_DEG = 8.25
+RETURN_JOINT_SPEED_DEG_S = 9.
 
 
 def load_reference(directory):
@@ -121,7 +123,9 @@ def return_plan(state, reference, limits, now):
     scale = min(1., RETURN_JOINT_DEG/largest, RETURN_NORM_DEG/float(np.linalg.norm(delta)))
     fractions = np.linspace(0., 1., 61)
     joints = np.radians(start+fractions[:, None]*scale*delta)
-    timing = retime_path_segment(fractions, joints, 0., 0., limits)
+    return_limits = replace(limits, joint_velocity_rad_s=np.minimum(
+        limits.joint_velocity_rad_s, np.radians(RETURN_JOINT_SPEED_DEG_S)))
+    timing = retime_path_segment(fractions, joints, 0., 0., return_limits)
     points = np.vstack((joints[1:], joints[-1]))
     times = [*timing.times_s[1:].tolist(), float(timing.times_s[-1]+.1)]
     PolicyTrajectory(start.tolist(), np.degrees(points).tolist(), times,

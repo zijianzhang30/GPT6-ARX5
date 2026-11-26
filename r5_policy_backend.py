@@ -23,6 +23,10 @@ from policy_trajectory import PolicyTrajectory, debit_trajectory, preview_trajec
 GRIPPER_SETTLE_TOLERANCE_RAW = .15
 
 
+# Bound the post-playback wait while leaving time for a powered hold and fresh capture.
+REVIEWED_POSE_SETTLE_TIMEOUT_S = 15.
+
+
 class R5ExecutionFault(RuntimeError):
     pass
 
@@ -31,15 +35,22 @@ class R5SettleTimeout(R5ExecutionFault):
     """The existing arrival test failed; never means a successful grasp."""
 
 
+class R5StationaryArrivalFault(R5ExecutionFault):
+    """Stationary actuator feedback failed the arrival test."""
+
+
 class R5PoweredHoldFault(R5ExecutionFault):
     """Task remains faulted while independent supervision maintains hold."""
 
 
 class R5PolicyBackend:
     def __init__(self, client, vision_check, *, clock=time.monotonic, sleep=time.sleep,
-                 minimum_cartesian_command_step_deg=0., retain_settle_fault_hold=False):
+                 minimum_cartesian_command_step_deg=0., retain_settle_fault_hold=False,
+                 enforce_session_limits=True, stationary_arrival=False):
         if type(retain_settle_fault_hold) is not bool:
             raise ValueError('retain_settle_fault_hold must be a boolean')
+        if type(stationary_arrival) is not bool:
+            raise ValueError('stationary_arrival must be a boolean')
         if (not finite(minimum_cartesian_command_step_deg)
                 or not 0 <= minimum_cartesian_command_step_deg <= 24.):
             raise ValueError('Minimum Cartesian command step must be finite within 0..24 degrees')
@@ -49,11 +60,12 @@ class R5PolicyBackend:
         self.client = client
         self.vision_check = vision_check
         self.clock, self.sleep = clock, sleep
-        self.guard = ProposalGuard()
+        self.guard = ProposalGuard(enforce_session_limits=enforce_session_limits)
         self.observation = None
         self.consumed = False
         self.fault = None
-        self.retain_settle_fault_hold = retain_settle_fault_hold
+        self.stationary_arrival = stationary_arrival
+        self.retain_settle_fault_hold = retain_settle_fault_hold or stationary_arrival
         self.fault_hold = None
         self.fault_hold_failure = None
         self.stop_requested = False
@@ -119,9 +131,9 @@ class R5PolicyBackend:
         return state
 
     def _fail(self, error, *, request_stop):
-        # Only this typed arrival failure may try the optional hold path. A
+        # Only typed arrival failures may try the optional hold path. A
         # camera, watchdog, transport or hardware error never enters it.
-        if (type(error) is R5SettleTimeout and request_stop
+        if (type(error) in (R5SettleTimeout, R5StationaryArrivalFault) and request_stop
                 and self.retain_settle_fault_hold and self.fault is None):
             try:
                 from fault_powered_hold import begin_fault_hold
@@ -207,7 +219,7 @@ class R5PolicyBackend:
                 state = self._reanchor_hold_to_measured(state)
                 with self.command_lock:
                     state = self._read_locked(holding=True)
-                    guard = ProposalGuard()
+                    guard = ProposalGuard(enforce_session_limits=self.guard.enforce_session_limits)
                     guard.check_state(state)
                     self.guard = guard
                     self.observation = None
@@ -375,39 +387,41 @@ class R5PolicyBackend:
             self.busy = False
 
     def _settle(self, initial, target, *, command_relative=False, min_progress=.7,
-                reverse_deadband_deg=0.):
-        timeout = 5.
-        if 'gripper_raw' in target:
+                reverse_deadband_deg=0., allow_pose_correction=False):
+        started_at = self.clock()
+        deadline = None if self.stationary_arrival else started_at + 5.
+        if allow_pose_correction:
+            deadline = started_at + REVIEWED_POSE_SETTLE_TIMEOUT_S
+        if deadline is not None and 'gripper_raw' in target:
             # The worker ramps raw gripper targets at 0.6 * speed units/second.
             travel = abs(target['gripper_raw']-initial['gripper_command_raw'])
-            timeout = max(timeout, travel/(.6*initial['speed']) + 2.)
-        deadline = self.clock() + timeout
+            deadline = started_at + max(5., travel/(.6*initial['speed']) + 2.)
         samples, grips = deque(maxlen=16), deque(maxlen=16)
         requested_q = target.get("joints_deg", initial["command_deg"])
         # Gripper-only actions require stable held joints, not progress toward
         # a pre-existing position-control residual that was never a new motion.
         arm_initial = np.array(initial['joints_deg'] if 'joints_deg' in target else requested_q)
-        trace = []
+        trace = deque(maxlen=120)
         # Diagnostic data only: no file I/O or extra hardware reads in this loop.
         # Reset at entry so an early check failure cannot expose a previous settle
         # trace as though it belonged to this attempt.
         feedback = {'initial_measured_deg': initial['joints_deg'],
                     'initial_command_deg': initial['command_deg'],
                     'target': target, 'samples': [],
-                    'started_at_s': deadline-timeout, 'deadline_at_s': deadline,
+                    'started_at_s': started_at, 'deadline_at_s': deadline,
                     'settle_parameters': {
                         'command_relative': command_relative, 'min_progress': min_progress,
                         'max_residual_deg': POLICY_SETTLE_ERROR_DEG,
                         'reverse_deadband_deg': reverse_deadband_deg}}
         self.last_execution_feedback = feedback
-        while self.clock() < deadline:
+        stationary_failure = False
+        while deadline is None or self.clock() < deadline:
             self.check()
             state = self._read()
             now = self.clock()
             trace.append({'at_s': now, 'joints_deg': state['joints_deg'],
                           'command_deg': state['command_deg'], 'gripper_raw': state['gripper_raw'],
                           'gripper_command_raw': state['gripper_command_raw']})
-            feedback['samples'] = trace[-120:]
             samples.append((now, np.array(state["joints_deg"])))
             grips.append((now, state["gripper_raw"]))
             arm_ok = step_settled({"joints_deg": requested_q}, arm_initial, samples, now,
@@ -436,8 +450,21 @@ class R5PolicyBackend:
                            and (progress >= .5 or within_deadband))
             trace[-1]['checks'] = {'arm_ok': bool(arm_ok), 'command_ok': bool(command_ok),
                                    'grip_ok': bool(grip_ok)}
+            feedback['samples'] = list(trace)
             if arm_ok and command_ok and grip_ok:
                 return state
+            if self.stationary_arrival and command_ok:
+                from fault_powered_hold import stationary, require_stationary_arrival
+                try:
+                    # For completed reviewed poses, continuous measured joint positions
+                    # can establish stationarity despite quantized velocity feedback.
+                    stationary(state, check_velocity=not allow_pose_correction)
+                    require_stationary_arrival(self, state)
+                except R5ExecutionFault:
+                    pass
+                else:
+                    stationary_failure = True
+                    break
             self.sleep(.05)
         latest = trace[-1] if trace else None
         detail = ''
@@ -451,6 +478,9 @@ class R5PolicyBackend:
                            f"gripper_target_raw={target['gripper_raw']}, "
                            f"gripper_measured_raw={latest['gripper_raw']}, "
                            f"gripper_command_raw={latest['gripper_command_raw']}")
+        if stationary_failure:
+            actuator = 'gripper' if 'gripper_raw' in target else 'joint'
+            raise R5StationaryArrivalFault(f'Stationary {actuator} feedback failed the arrival check'+detail)
         raise R5SettleTimeout("Action did not settle; no grasp/contact inferred from a stall"+detail)
 
     def _reanchor_hold_to_measured(self, held):
@@ -550,10 +580,24 @@ class R5PolicyBackend:
                     if self.clock() > deadline:
                         raise R5ExecutionFault('Cartesian playback did not finish')
                     self.sleep(.02)
-                # Stable partial tracking is exposed to the next visual turn;
-                # stalls and wrong-direction motion still fail the action.
-                final = self._settle(state, target, command_relative=True, min_progress=.4,
-                                     reverse_deadband_deg=POLICY_REVERSE_DEADBAND_DEG)
+                correction_reason = None
+                try:
+                    final = self._settle(state, target, command_relative=True, min_progress=.4,
+                                         reverse_deadband_deg=POLICY_REVERSE_DEADBAND_DEG,
+                                         allow_pose_correction=self.stationary_arrival)
+                except (R5StationaryArrivalFault, R5SettleTimeout) as exc:
+                    if not self.stationary_arrival:
+                        raise
+                    final = self._read()
+                    if (final['policy_trajectory_active'] is not False
+                            or max(abs(a-b) for a, b in zip(final['command_deg'], points[-1])) > .05
+                            or max(abs(a-b) for a, b in zip(final['command_deg'], final['joints_deg']))
+                                > POLICY_HOLD_ERROR_DEG
+                            or abs(final['gripper_command_raw']-state['gripper_command_raw']) > .01
+                            or abs(final['gripper_target_raw']-final['gripper_command_raw']) > .01):
+                        raise R5ExecutionFault('Cannot establish powered hold for pose correction') from exc
+                    correction_reason = ('position_not_reached' if isinstance(exc, R5StationaryArrivalFault)
+                                         else 'arrival_check_timed_out')
                 self._command('pause_hold')
                 # Wait through the existing zero-velocity pause profile.
                 hold_deadline = self.clock()+1
@@ -568,15 +612,19 @@ class R5PolicyBackend:
                     raise R5ExecutionFault('Hold changed the Cartesian endpoint')
                 residual = [measured-requested for measured, requested
                             in zip(held['joints_deg'], points[-1])]
+                settle = {'settled': correction_reason is None,
+                          'partial_tracking_accepted': correction_reason is None,
+                          'reverse_deadband_deg': POLICY_REVERSE_DEADBAND_DEG,
+                          'max_abs_residual_deg': max(abs(value) for value in residual)}
+                if correction_reason is not None:
+                    settle['reason'] = correction_reason
                 return {'source_observation_id': args['observation_id'],
                         'submitted_joints_deg': points[-1],
                         'measured_joints_deg': held['joints_deg'],
                         'tracking_residual_deg': residual,
                         'measured_gripper_raw': held['gripper_raw'],
                         'control_state': 'holding',
-                        'settle': {'settled': True, 'partial_tracking_accepted': True,
-                                   'reverse_deadband_deg': POLICY_REVERSE_DEADBAND_DEG,
-                                   'max_abs_residual_deg': max(abs(value) for value in residual)},
+                        'settle': settle,
                         'grasp_verified': False, 'collision_checked': False}
             except Exception as exc:
                 self._fail(exc, request_stop=True)

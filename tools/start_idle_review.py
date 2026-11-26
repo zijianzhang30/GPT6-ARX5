@@ -7,7 +7,7 @@ from pathlib import Path
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from visual_control import ArmWorkbenchClient, WorkbenchClient
+from visual_control import ProfileArmWorkbenchClient as ArmWorkbenchClient, WorkbenchClient
 from r5_sequential_trial import require_idle
 
 

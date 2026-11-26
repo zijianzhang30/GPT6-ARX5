@@ -17,7 +17,7 @@ from r5_policy_backend import R5PolicyBackend
 from r5_policy_deployment import R5DualCameras
 from r5_policy_supervisor import R5PolicySupervisor, SupervisedCameras, StationaryCameraGate
 from supervised_policy import open_empty_gripper, prepare_hold
-from visual_control import ArmWorkbenchClient
+from visual_control import ProfileArmWorkbenchClient as ArmWorkbenchClient
 from gpt_policy.motion.coordination import TrajectoryIKError
 
 

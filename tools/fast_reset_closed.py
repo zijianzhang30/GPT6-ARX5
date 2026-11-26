@@ -15,7 +15,7 @@ from concurrent.futures import ThreadPoolExecutor
 ROOT = '/home/tuojing/arx_r5_control'
 sys.path.insert(0, ROOT)
 
-from visual_control import ArmWorkbenchClient
+from visual_control import ProfileArmWorkbenchClient as ArmWorkbenchClient
 from r5_policy_deployment import R5DualCameras
 from r5_policy_supervisor import R5PolicySupervisor, SupervisedCameras
 from r5_policy_backend import R5PolicyBackend

@@ -6,7 +6,7 @@ import math
 import numpy as np
 
 from motion_safety import (finite, vector, JOINT_STEP_DEG, JOINT_STEP_NORM_DEG,
-                           SUPERVISED_SPEED)
+                           POLICY_JOINT_SPEED_DEG_S)
 
 
 class PolicyTrajectory:
@@ -34,9 +34,9 @@ class PolicyTrajectory:
                 or np.max(np.linalg.norm(displacement, axis=1)) > JOINT_STEP_NORM_DEG+1e-9):
             raise ValueError('Whole trajectory exceeds the existing observed-step envelope')
         velocity = np.diff(self.points, axis=0)/np.diff(self.times)[:, None]
-        if np.max(np.abs(velocity)) > 30*SUPERVISED_SPEED+1e-6:
+        if np.max(np.abs(velocity)) > POLICY_JOINT_SPEED_DEG_S+1e-6:
             raise ValueError(
-                f'Trajectory exceeds {SUPERVISED_SPEED:.0%} joint speed'
+                f'Trajectory exceeds joint speed limit of {POLICY_JOINT_SPEED_DEG_S:g} deg/s'
             )
 
     def sample(self, now):
@@ -60,10 +60,13 @@ def preview_trajectory(guard, state, points_deg):
         debit_trajectory(preview, state, points_deg)
     except ValueError as exc:
         reason = preview.failure or str(exc)
+        hint = 'Adjust the target for a step-limit rejection.'
+        if guard.enforce_session_limits:
+            hint = ('Adjust the target for a step-limit rejection; a session-budget '
+                    'boundary requires host renewal.')
         raise ValueError('Trajectory preview rejected before execution: ' + reason
                          + '; no motion or budget consumed; live session is not fault-latched. '
-                         'Adjust the target for a step-limit rejection; a session-budget '
-                         'boundary requires host renewal.') from exc
+                         + hint) from exc
 
 
 def check_tracking_reserve(state, points_deg, reserve_deg):
@@ -114,14 +117,15 @@ def debit_trajectory(guard, state, points_deg):
     previous = state['joints_deg']
     for q in points_deg:
         guard._check_margin(q)
-        if max(abs(a-b) for a, b in zip(q, guard.anchor)) > SESSION_EXCURSION_DEG:
+        if (guard.enforce_session_limits
+                and max(abs(a-b) for a, b in zip(q, guard.anchor)) > SESSION_EXCURSION_DEG):
             guard.fail('Trajectory leaves session envelope')
         delta = [a-b for a, b in zip(q, state['joints_deg'])]
         if max(map(abs, delta)) > JOINT_STEP_DEG+1e-9 or math.hypot(*delta) > JOINT_STEP_NORM_DEG+1e-9:
             guard.fail('Trajectory exceeds observed-step envelope')
         cost += sum(abs(a-b) for a, b in zip(q, previous))
         previous = q
-    if guard.joint_travel+cost > SESSION_JOINT_TRAVEL_DEG+1e-9:
+    if guard.enforce_session_limits and guard.joint_travel+cost > SESSION_JOINT_TRAVEL_DEG+1e-9:
         guard.fail('Trajectory exhausts session joint travel budget')
     old_cost = guard.joint_travel
     guard.accept(state, {'joints_deg': points_deg[-1]})

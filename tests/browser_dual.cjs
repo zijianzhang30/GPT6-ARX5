@@ -16,10 +16,14 @@ const base=process.env.DUAL_TEST_URL||'http://127.0.0.1:8768';
     await d.wait(async()=>await d.findElement(By.id('dual-overview')).isDisplayed(),6000);
     await d.wait(async()=>await d.executeScript(`return ['gemini','gemini_right','external'].every(k=>document.getElementById('camera-'+k+'-image').naturalWidth>0)`),15000);
     assert.equal(await d.findElements(By.css('.arm-joints [data-joint]')).then(x=>x.length),12);
+    assert.deepEqual(await d.executeScript(`return [...document.querySelectorAll('#active-arm option')].map(el=>[el.value,el.textContent])`),
+      [['left','左臂 · can1'],['right','右臂 · can0']]);
+    assert.deepEqual(await d.executeScript(`return [...document.querySelectorAll('.camera-card')].map(el=>[el.dataset.camera,el.querySelector('strong').textContent])`),
+      [['gemini_right','左臂手腕 · Gemini 305'],['gemini','右臂手腕 · Gemini 305'],['external','外接 RGB']]);
+    await d.executeScript(`const el=document.getElementById('active-arm');el.value='left';el.dispatchEvent(new Event('change',{bubbles:true}));`);
+    await d.wait(async()=>await d.executeScript(`return document.getElementById('active-arm-label').textContent.includes('左臂的')&&window.armReads.includes('/api/arms/left/state')`),5000);
     await d.executeScript(`const el=document.getElementById('active-arm');el.value='right';el.dispatchEvent(new Event('change',{bubbles:true}));`);
     await d.wait(async()=>await d.executeScript(`return document.getElementById('active-arm-label').textContent.includes('右臂的')&&window.armReads.includes('/api/arms/right/state')`),5000);
-    await d.executeScript(`const el=document.getElementById('active-arm');el.value='left';el.dispatchEvent(new Event('change',{bubbles:true}));`);
-    await d.wait(async()=>await d.executeScript(`return document.getElementById('active-arm-label').textContent.includes('左臂的')`),5000);
     fs.writeFileSync('docs/dual-workbench-desktop.png',await d.takeScreenshot(),'base64');
     await d.manage().window().setRect({width:390,height:844});
     assert(await d.executeScript('return document.documentElement.scrollWidth<=innerWidth+1'),'Mobile overflow');

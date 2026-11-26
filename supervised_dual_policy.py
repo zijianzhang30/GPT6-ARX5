@@ -18,7 +18,7 @@ from r5_policy_deployment import R5DualCameras, run_r5_policy
 from r5_policy_supervisor import R5PolicySupervisor, SupervisedCameras
 from supervised_policy import (DeadlineAgent, check_tracking_contract, prepare_hold,
                                open_empty_gripper, queued_operator_command, wait_for_operator_start)
-from visual_control import ArmWorkbenchClient
+from visual_control import ProfileArmWorkbenchClient as ArmWorkbenchClient
 
 
 def main(argv=None):

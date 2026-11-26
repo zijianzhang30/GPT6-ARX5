@@ -14,7 +14,8 @@ from motion_safety import finite
 from policy_trajectory import PolicyTrajectory, preview_trajectory, check_tracking_reserve
 from motion_safety import (GRIPPER_STEP_RAW, GRIPPER_CLOSE_STEP_RAW, SESSION_GRIPPER_TRAVEL_RAW,
                            JOINT_STEP_DEG, JOINT_STEP_NORM_DEG, SESSION_PROPOSALS,
-                           SESSION_EXCURSION_DEG, SESSION_JOINT_TRAVEL_DEG)
+                           SESSION_EXCURSION_DEG, SESSION_JOINT_TRAVEL_DEG,
+                           POLICY_JOINT_SPEED_DEG_S)
 
 SOURCE = ROOT/'vendor/GPT-Policy-main/src'
 if str(SOURCE) not in sys.path:
@@ -161,7 +162,8 @@ class CartesianBackend:
                                60, 2e-5, 2e-4, 2e-5, 2e-4)
         self.ik.name = self.solver.name
         limits = MotionLimits(50, .001, .01, .01, .05,
-                              np.full(6, np.radians(9)), np.full(6, np.radians(45)),
+                              np.full(6, np.radians(POLICY_JOINT_SPEED_DEG_S)),
+                              np.full(6, np.radians(45)),
                               np.full(6, np.radians(240)))
         self.planner = EefTrajectoryPlanner(
             lambda: np.radians(self.backend._read(holding=True)['command_deg']),

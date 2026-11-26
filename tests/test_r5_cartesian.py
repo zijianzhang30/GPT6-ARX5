@@ -11,6 +11,7 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 
 from control import ROOT, URDF
+from motion_safety import SESSION_JOINT_TRAVEL_DEG
 from r5_cartesian import CartesianBackend, CalibratedCameras, profile_issues
 from r5_policy_backend import R5PolicyBackend, R5ExecutionFault
 from r5_policy_deployment import R5Cameras, run_r5_policy
@@ -189,7 +190,7 @@ class CartesianTests(unittest.TestCase):
         self.assertIn('surfaces actually straddle the target', text)
         self.assertNotIn('straddle the ball', text)
         self.assertIn('24 degrees/joint, 33 degrees joint norm', text)
-        self.assertIn('20 accepted actions, 40 degrees excursion, 120 degrees total joint travel', text)
+        self.assertIn('20 accepted actions, 40 degrees excursion, 360 degrees total joint travel', text)
         self.assertIn('prefer one longer continuous planned path', text)
 
     def test_demonstrated_pregrasp_guide_stays_on_reference_ik_branch(self):
@@ -213,7 +214,7 @@ class CartesianTests(unittest.TestCase):
             self.robot.plan([self.target()], 'Fixture retry')
 
     def test_low_remaining_budget_returns_to_host_before_model_give_up(self):
-        self.low.guard.joint_travel = 119.716146
+        self.low.guard.joint_travel = SESSION_JOINT_TRAVEL_DEG-.283854
         self.low.guard.proposals = 5
         agent = MagicMock()
         agent.decide.return_value = {'name': 'give_up', 'arguments': {
@@ -247,7 +248,7 @@ class CartesianTests(unittest.TestCase):
                 recorder.close('unreviewed')
 
     def test_proactive_budget_boundary_requires_host_opt_in(self):
-        self.low.guard.joint_travel = 119.716146
+        self.low.guard.joint_travel = SESSION_JOINT_TRAVEL_DEG-.283854
         agent = MagicMock()
         agent.decide.return_value = {'name': 'give_up', 'arguments': {
             'reason': 'Fixture operator handoff', 'hindsight': ''}}
