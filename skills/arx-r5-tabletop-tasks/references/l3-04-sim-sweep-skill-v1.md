@@ -1,9 +1,9 @@
-# L3-04 扫三个方块：仿真经验 v1
+# L3-04: Sweep Three Blocks — Simulation-Derived Skill v1
 
-这是从 LLM4Robot-Bench 的 RGB-only CaP 与 System 2 仿真试跑提炼的操作经验。只借用判断和纠错方法，不回放仿真坐标、位移、转角、夹爪数值或动作序列。每步用当前 RGB、机器人反馈和动作回执重新判断，服从本站的监督与保护规则。
+This skill distills lessons from RGB-only CaP and System 2 simulation trials on LLM4Robot-Bench. Transfer the decision rules, not the simulated poses, offsets, rotations, gripper settings, or action sequences. Reassess each action using current RGB views, robot feedback, and action receipts. Follow the station's existing supervision and safeguards.
 
-1. **先确认拿稳，再扫。** 在新图中辨认实心刷柄和原支撑。合爪后先做受检的小幅试提，从新图确认整把刷子跟随且离开支撑。闭爪、末端到位或夹指包住手柄的单张投影都不能证明已抓稳。提起后重新判断刷毛下缘、朝向和桌面间隙。
-2. **先短扫，看方块是不是真的在动。** 从目标方块外侧接近，选能通向簸箕开口的方向做短扫。对比新旧画面；只有方块确实沿预期方向移动、且刷毛仍在有效接触位置时才续扫。方块偏移或只是被刷毛擦开时，按新位置重新对准，不沿用旧的长扫终点。
-3. **后排方块可以分两段处理。** 如果直接扫向开口时接触位置不清楚，先把目标带到开口前较开阔、看得清的位置，再单独入箕。颜色相近的支撑物或托盘边可能被误认成方块；用另一视角核对身份，遮挡时先取得清楚的新图。
-4. **在入口卡住时，不边顶着边沿边转腕。** 先停下并核对新图及状态；在看清可行撤离路径时，先将刷头抬离边沿再调整朝向。重新核对刷毛、方块和开口是否在同一条推进线上，再短段向内。刷柄滑移、反馈不明或连续无进展时暂停，先查明状态，不盲目加压或重发。
-5. **撤刷以后再验收。** 沿看得清的空向撤刷，逐块核对方块是否完全在簸箕内、有没有贴边外伸或被撤刷拖出。落在簸箕上不等于完整入箕；不能确认就记录为未确认。
+1. **Verify the brush is secure before sweeping.** Use fresh images to identify a graspable part of the handle and what supports the brush. After closing the gripper, request a small, supervised test lift. Confirm from fresh images that the whole brush follows the gripper and leaves its support. Gripper closure, reaching the target pose, or apparent overlap in a single image does not prove a secure grasp. After lifting, reassess the lower bristle edge, its orientation, and its clearance above the table.
+2. **Test with a short sweep and check that the block moves.** Approach from outside the target block and make a short sweep toward the dustpan opening. Compare the before and after views. Continue only if the block moves in the intended direction and the bristles remain positioned to push it. If the block shifts sideways or the brush only grazes it, realign to its current location instead of reusing the previous sweep endpoint.
+3. **Handle rear blocks in two stages when needed.** If a direct sweep toward the opening makes contact hard to judge, first bring the target to a clear, visible area in front of the opening, then guide it into the pan. A similarly colored support or tray edge can be mistaken for a block. Check the target from another view and obtain a clear image before continuing if it is obscured.
+4. **Do not rotate the wrist while the brush is pressed against the rim.** If the brush binds at the opening, pause and inspect fresh images and feedback. If a clear retreat is visible, lift the brush clear of the rim before changing its orientation. Realign the bristles, block, and opening before making another short push inward. If the handle slips, an action outcome is unclear, or repeated sweeps make no progress, pause and check what happened rather than increasing pressure or blindly retrying.
+5. **Judge the result after withdrawing the brush.** Withdraw along a visibly clear path, then check each block individually. Look for any block overhanging the rim or pulled out by the withdrawing brush. Resting on the pan does not mean the block is fully inside it. If the views do not establish that a block is fully inside, record it as unconfirmed.
