@@ -2,6 +2,7 @@
 """Recording workbench that reuses an already running robot service."""
 import argparse
 import json
+import logging
 import re
 import secrets
 import tarfile
@@ -16,9 +17,15 @@ from pathlib import Path
 from urllib.parse import urlsplit
 from concurrent.futures import ThreadPoolExecutor
 
-from app import Handler, ROOT, MAX_COMMAND_BYTES, MAX_TRAJECTORY_BYTES
+from app import Handler, ROOT, MAX_COMMAND_BYTES, MAX_TRAJECTORY_BYTES, PROXY_HEADER
 from demonstrations import Demonstrations
 from workbench_arms import ARM_BY_CHANNEL, ARM_CHANNELS
+from workbench_timing import (SLOW_REQUEST_S, STAGE_TIMING_ENABLED, TRACE_HEADER, TRACE_ID,
+                              log_stages, time_stage, trace_headers, trace_request)
+
+
+LOGGER = logging.getLogger(__name__)
+SLOW_HEARTBEAT_LOG_S = .1
 
 
 class Upstream:
@@ -42,7 +49,8 @@ class Upstream:
 
     def snapshot(self):
         try:
-            with self.opener.open(self.base + '/api/state', timeout=.25) as response:
+            request = urllib.request.Request(self.base + '/api/state', headers=trace_headers())
+            with self.opener.open(request, timeout=.25) as response:
                 return json.load(response)
         except (OSError, ValueError) as exc:
             raise ValueError(f'原控制服务状态不可用：{exc}') from exc
@@ -54,12 +62,13 @@ class Upstream:
             for attempt in range(2):
                 request = urllib.request.Request(self.base + '/api/command',
                     data=json.dumps(data, allow_nan=False).encode(),
-                    headers={'Content-Type': 'application/json', 'X-Control-Token': self.token})
+                    headers={'Content-Type': 'application/json', 'X-Control-Token': self.token,
+                             PROXY_HEADER: 'record-workbench', **trace_headers()})
                 try:
                     with self.opener.open(request, timeout=.25) as response:
-                        json.load(response)
+                        state = json.load(response)
                     accepted = True
-                    return
+                    return state
                 except urllib.error.HTTPError as exc:
                     accepted = False
                     if exc.code == 403 and attempt == 0:
@@ -167,7 +176,12 @@ class RecordingWorkbench(ThreadingHTTPServer):
         super().__init__(address, RecordingHandler)
 
     def arm_snapshot(self, arm):
-        state = self.arms[arm].snapshot()
+        return self._validate_arm_snapshot(arm, self.arms[arm].snapshot())
+
+    @staticmethod
+    def _validate_arm_snapshot(arm, state):
+        if not isinstance(state, dict):
+            raise ValueError(f'{arm} upstream returned an invalid state')
         expected = ARM_CHANNELS[arm]
         if state.get('simulation') is not True and state.get('channel') != expected:
             raise ValueError(f'{arm} upstream must use {expected}; command routing blocked')
@@ -176,34 +190,54 @@ class RecordingWorkbench(ThreadingHTTPServer):
     def arm_command(self, arm, data):
         action = data.get('action')
         paired = bool(self.paired_policy_client and data.get('client') == self.paired_policy_client)
+        paired_heartbeat = paired and action == 'heartbeat' and data.keys() == {'action', 'client'}
         # Only the reserved owner's plain keepalive can run alongside its peer.
         # Other commands take both locks in the same order for atomic peer checks.
-        if paired and action == 'heartbeat' and data.keys() == {'action', 'client'}:
+        if paired_heartbeat:
             command_locks = (self.command_locks[arm],)
         else:
             command_locks = (self.lock, *self.command_locks.values())
-        with ExitStack() as locks:
-            for lock in command_locks:
-                locks.enter_context(lock)
-            current = self.arm_snapshot(arm)
-            if action not in ('stop', 'disconnect'):
-                if paired:
-                    self.check_paired_command(data, current)
-                for other in self.arms:
-                    if other == arm:
-                        continue
-                    state = self.arm_snapshot(other)
-                    if paired and (state.get('robot_status') != 'ready'
-                                   or state.get('error_codes') != []
-                                   or state.get('enabled') and state.get('owner') != self.paired_policy_client):
-                        raise ValueError('Paired peer is not ready or belongs to another controller')
-                    if (state.get('enabled') and not paired) or state.get('robot_status') == 'initializing':
-                        raise ValueError('另一只机械臂正在使能或初始化；当前工作台一次只控制一只臂')
-                episode = self.recorder.status().get('episode')
-                if arm != self.recording_arm and episode and episode.get('status') in ('recording', 'saving'):
-                    raise ValueError('当前录制仅包含右臂（can0）。请先完成录制再控制左臂（can1）。')
-            self.arms[arm].command(data)
-            return self.arm_snapshot(arm)
+        timings = {} if paired_heartbeat else None
+        started = time.monotonic() if paired_heartbeat else None
+        heartbeat_ok = False
+        try:
+            with ExitStack() as locks:
+                with time_stage(timings, 'lock_wait'):
+                    for lock in command_locks:
+                        locks.enter_context(lock)
+                with time_stage(timings, 'selected_state'):
+                    current = self.arm_snapshot(arm)
+                if action not in ('stop', 'disconnect'):
+                    if paired:
+                        self.check_paired_command(data, current)
+                    with time_stage(timings, 'peer_state'):
+                        for other in self.arms:
+                            if other == arm:
+                                continue
+                            state = self.arm_snapshot(other)
+                            if paired and (state.get('robot_status') != 'ready'
+                                           or state.get('error_codes') != []
+                                           or state.get('enabled') and state.get('owner') != self.paired_policy_client):
+                                raise ValueError('Paired peer is not ready or belongs to another controller')
+                            if (state.get('enabled') and not paired) or state.get('robot_status') == 'initializing':
+                                raise ValueError('另一只机械臂正在使能或初始化；当前工作台一次只控制一只臂')
+                    episode = self.recorder.status().get('episode')
+                    if arm != self.recording_arm and episode and episode.get('status') in ('recording', 'saving'):
+                        raise ValueError('当前录制仅包含右臂（can0）。请先完成录制再控制左臂（can1）。')
+                with time_stage(timings, 'upstream_command'):
+                    response = self.arms[arm].command(data)
+                if paired_heartbeat:
+                    state = self._validate_arm_snapshot(arm, response)
+                    heartbeat_ok = True
+                    return state
+                return self.arm_snapshot(arm)
+        finally:
+            if paired_heartbeat:
+                elapsed = time.monotonic() - started
+                threshold = SLOW_REQUEST_S if STAGE_TIMING_ENABLED else SLOW_HEARTBEAT_LOG_S
+                level = logging.WARNING if elapsed >= threshold or not heartbeat_ok else logging.DEBUG
+                LOGGER.log(level, 'R5 paired heartbeat arm=%s trace_id=%s start_mono=%.6f ok=%s total_ms=%.2f stages_ms=%s',
+                           arm, TRACE_ID.get(), started, heartbeat_ok, elapsed * 1000, timings)
 
     def check_paired_command(self, data, state):
         from motion_safety import finite, SUPERVISED_SPEED
@@ -276,7 +310,11 @@ class RecordingHandler(Handler):
             if len(parts) == 5 and parts[1:3] == ['api', 'arms'] and parts[4] == 'state':
                 if parts[3] not in self.server.arms:
                     return self.send(404, {'error': '未知机械臂'})
-                return self.send(200, self.server.arm_snapshot(parts[3]))
+                with trace_request(self.headers.get(TRACE_HEADER)), log_stages(f'proxy GET {path}') as timings:
+                    with time_stage(timings, 'upstream_state'):
+                        state = self.server.arm_snapshot(parts[3])
+                    with time_stage(timings, 'response'):
+                        return self.send(200, state)
             if path == '/api/recording/status':
                 return self.send(200, self.server.recorder.status())
             if path == '/api/recordings':
@@ -328,6 +366,7 @@ class RecordingHandler(Handler):
             if not isinstance(data, dict):
                 raise ValueError('无效请求')
             if arm_route or legacy_command:
+                self.record_command_action(data)
                 if size > MAX_COMMAND_BYTES and data.get('action') != 'policy_trajectory':
                     raise ValueError('请求过大')
                 arm = parts[3] if arm_route else self.server.recording_arm
@@ -335,7 +374,11 @@ class RecordingHandler(Handler):
                     return self.send(404, {'error': '未知机械臂'})
                 if arm_route and (len(parts) != 6 or parts[4] != ARM_CHANNELS[arm]):
                     return self.send(409, {'error': '机械臂 ID 与 CAN 通道必须匹配。请使用 /api/arms 公布的 command_path。'})
-                return self.send(200, self.server.arm_command(arm, data))
+                with trace_request(self.request_trace_id), log_stages(f'proxy POST {path}') as timings:
+                    with time_stage(timings, 'arm_command'):
+                        state = self.server.arm_command(arm, data)
+                    with time_stage(timings, 'response'):
+                        return self.send(200, state)
             recorder = self.server.recorder
             if path == '/api/recording/start':
                 other = self.server.secondary_arm
@@ -363,6 +406,7 @@ def main():
     parser.add_argument('--paired-policy-client', help='Reserve concurrent control for one attended dual-policy owner')
     parser.add_argument('--recordings', type=Path, default=ROOT / 'recordings')
     args = parser.parse_args()
+    logging.basicConfig(level=logging.INFO, format='%(levelname)s %(name)s %(message)s')
     if any(url and urlsplit(url).port == args.port for url in (args.upstream, args.right_upstream)):
         parser.error('Recording and upstream ports must differ.')
     server = RecordingWorkbench(('127.0.0.1', args.port), args.upstream, args.recordings.resolve(),

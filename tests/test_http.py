@@ -36,6 +36,15 @@ class HTTP(unittest.TestCase):
         page=self.opener.open(self.base).read().decode()
         self.assertIn(self.server.token,page);self.assertNotIn('__TOKEN__',page)
         self.assertIn('双路现场画面',page)
+    def test_access_log_keeps_successful_polling_at_debug_level(self):
+        with self.assertLogs('r5.workbench.http', level='DEBUG') as access:
+            with self.opener.open(self.base+'/api/state?secret=hidden') as response:
+                self.assertEqual(response.status, 200)
+            with self.opener.open(self.base+'/') as response:
+                self.assertEqual(response.status, 200)
+        self.assertEqual([entry.levelname for entry in access.records], ['DEBUG', 'INFO'])
+        self.assertIn("path='/api/state' status=200", access.output[0])
+        self.assertNotIn('secret=hidden', '\n'.join(access.output))
     def test_camera_frames_are_same_origin(self):
         for key in ('gemini','external'):
             response=self.opener.open(f'{self.base}/api/cameras/{key}/frame.jpg')

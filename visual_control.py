@@ -5,15 +5,20 @@ No camera calibration or pixel-to-metre conversion is assumed. The caller select
 each action after inspecting both images; this is not an autonomous grasp policy.
 """
 import argparse
+import io
 import json
+import os
 import queue
 import re
+import sys
 import threading
 import time
+import urllib.error
 import urllib.request
 import uuid
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
+from http.client import HTTPException
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -22,6 +27,9 @@ import numpy as np
 from motion_safety import (ProposalGuard, feedback_issues, finite, vector, JOINT_STEP_DEG,
                            JOINT_STEP_NORM_DEG, JOINT_MARGIN_DEG, gripper_step_limit)
 from workbench_arms import ARM_CHANNELS, PROFILE_WORKBENCH_ARM
+from workbench_timing import TRACE_HEADER, log_stages, new_trace_id, time_stage, trace_request
+
+MAX_HTTP_ERROR_BODY_BYTES = 16384
 
 
 def detect_ball(jpeg):
@@ -176,10 +184,39 @@ class WorkbenchClient:
                 with self.opener.open(self.base+'/', timeout=1) as response:
                     self.token = re.search(rb'<meta name="control-token" content="([^"]+)"', response.read()).group(1).decode()
             headers = {'Content-Type': 'application/json', 'X-Control-Token': self.token}
+            program = Path(sys.argv[0]).name
+            if re.fullmatch(r'[a-zA-Z0-9_.-]{1,80}', program):
+                headers['X-R5-Client-Program'] = program
+            headers['X-R5-Client-Pid'] = str(os.getpid())
+        traced = path.startswith('/api/arms/') and path.endswith(('/state', '/command'))
+        trace_id = new_trace_id() if traced else None
+        if trace_id:
+            headers[TRACE_HEADER] = trace_id
         request = urllib.request.Request(self.base+path,
             data=None if data is None else json.dumps(data, allow_nan=False).encode(), headers=headers)
-        with self.opener.open(request, timeout=timeout) as response:
-            return json.load(response)
+        try:
+            with trace_request(trace_id), log_stages(f'client {request.get_method()} {path}', enabled=traced) as timings:
+                with time_stage(timings, 'http_headers'):
+                    response = self.opener.open(request, timeout=timeout)
+                with response, time_stage(timings, 'http_body'):
+                    return json.load(response)
+        except urllib.error.HTTPError as exc:
+            if exc.code != 400:
+                raise
+            try:
+                with exc:
+                    body = exc.read(MAX_HTTP_ERROR_BODY_BYTES)
+            except (OSError, HTTPException):
+                raise exc from None
+            try:
+                payload = json.loads(body)
+            except ValueError:
+                payload = None
+            detail = payload.get('error') if isinstance(payload, dict) else None
+            reason = f'{exc.reason}: {detail}' if isinstance(detail, str) and detail else exc.reason
+            # Review faults persist the exception text. Keep the response readable too.
+            raise urllib.error.HTTPError(exc.url, exc.code, reason, exc.headers,
+                                        io.BytesIO(body)) from None
 
     def state(self):
         return self.request('/api/state')

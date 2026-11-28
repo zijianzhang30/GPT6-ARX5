@@ -1,19 +1,29 @@
 #!/usr/bin/env python3
 """One-command local R5 workbench; simulation never loads the hardware SDK."""
 import argparse
+import hashlib
 import json
+import logging
 import mimetypes
+import re
 import secrets
 import threading
 import webbrowser
+from contextlib import ExitStack
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit
+from uuid import uuid4
 from camera_streams import CameraHub
 from control import Controller
+from workbench_timing import TRACE_HEADER, log_stages, time_stage, trace_request, valid_trace_id
 ROOT = Path(__file__).resolve().parent
 MAX_COMMAND_BYTES = 16384
 MAX_TRAJECTORY_BYTES = 2 * 1024 * 1024
+HTTP_LOGGER = logging.getLogger('r5.workbench.http')
+PROXY_HEADER = 'X-R5-Workbench-Hop'
+STOP_TRIGGERS = {'stop_button', 'enable_toggle', 'escape_key', 'space_key', 'dialog',
+                 'window_blur', 'page_hidden'}
 
 class Workbench(ThreadingHTTPServer):
     daemon_threads = True
@@ -47,12 +57,68 @@ class Workbench(ThreadingHTTPServer):
         super().server_close()
 
 class Handler(BaseHTTPRequestHandler):
-    def log_message(self, *_):
-        pass
+    request_action = None
+    request_client = None
+    request_trace_id = None
+    response_error = None
+
+    def log_request(self, code='-', size='-'):
+        path = getattr(self, 'path', '').partition('?')[0]
+        method = self.command
+        polling = (method == 'GET' and (path.endswith(('/state', '/frame.jpg'))
+                   or path in ('/api/arms', '/api/recording/status')))
+        if isinstance(code, int) and code >= 400:
+            level = logging.WARNING
+        elif polling or self.request_action == 'heartbeat':
+            level = logging.DEBUG
+        else:
+            level = logging.INFO
+        if not HTTP_LOGGER.isEnabledFor(level):
+            return
+        source = self.command_source() if method == 'POST' else ''
+        HTTP_LOGGER.log(level, 'HTTP port=%s method=%s path=%r status=%s action=%r error=%r%s',
+                        self.server.server_port, method, path[:256], code,
+                        self.request_action, self.response_error, source)
+
+    def command_source(self):
+        headers = getattr(self, 'headers', {})
+        client = self.request_client
+        paired = client is not None and client == getattr(self.server, 'paired_policy_client', None)
+        if isinstance(self.server, Workbench) and headers.get(PROXY_HEADER) == 'record-workbench':
+            source = 'workbench_proxy'
+        elif paired:
+            source = 'paired_policy'
+        elif headers.get('Origin') or headers.get('Sec-Fetch-Site'):
+            source = 'browser'
+        else:
+            source = 'local_api'
+        fingerprint = hashlib.sha256(client.encode('utf-8', errors='surrogatepass')).hexdigest()[:16] if client else None
+        program = headers.get('X-R5-Client-Program', '')
+        pid = headers.get('X-R5-Client-Pid', '')
+        trigger = headers.get('X-R5-Stop-Trigger')
+        return (f' source={source} peer={self.client_address[0]}:{self.client_address[1]}'
+                f' client_fingerprint={fingerprint} trace_id={self.request_trace_id}'
+                f' reported_program={program if re.fullmatch(r"[a-zA-Z0-9_.-]{1,80}", program) else None}'
+                f' reported_pid={pid if re.fullmatch(r"[0-9]{1,10}", pid) else None}'
+                f' stop_trigger={trigger if self.request_action == "stop" and trigger in STOP_TRIGGERS else None}'
+                f' user_agent={headers.get("User-Agent", "")[:160]!r}')
+
+    def record_command_action(self, data):
+        action = data.get('action')
+        if isinstance(action, str):
+            self.request_action = action[:80]
+        client = data.get('client')
+        if isinstance(client, str) and 0 < len(client) <= 100:
+            self.request_client = client
+        self.request_trace_id = valid_trace_id(self.headers.get(TRACE_HEADER)) or uuid4().hex
+
     def send(self, status, body, kind='application/json; charset=utf-8', headers=None):
+        error = body.get('error') if isinstance(body, dict) else None
+        self.response_error = error[:1024] if isinstance(error, str) else None
         if not isinstance(body, bytes):
             body = json.dumps(body, ensure_ascii=False, allow_nan=False).encode()
         self.send_response(status)
+        self.request_action = self.request_client = self.request_trace_id = self.response_error = None
         self.send_header('Content-Type', kind)
         self.send_header('Content-Length', str(len(body)))
         self.send_header('Cache-Control', 'no-store')
@@ -68,8 +134,14 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         path = urlsplit(self.path).path
         if path == '/api/state':
-            with self.server.lock:
-                return self.send(200, self.server.controller.snapshot())
+            operation = f'upstream port={self.server.server_port} GET /api/state'
+            with trace_request(self.headers.get(TRACE_HEADER)), log_stages(operation) as timings, ExitStack() as locks:
+                with time_stage(timings, 'lock_wait'):
+                    locks.enter_context(self.server.lock)
+                with time_stage(timings, 'snapshot'):
+                    state = self.server.controller.snapshot()
+                with time_stage(timings, 'response'):
+                    return self.send(200, state)
         parts = path.split('/')
         if len(parts) == 5 and parts[1:3] == ['api', 'cameras'] and parts[4] == 'frame.jpg':
             try:
@@ -103,12 +175,20 @@ class Handler(BaseHTTPRequestHandler):
             data = json.loads(self.rfile.read(size))
             if not isinstance(data, dict):
                 raise ValueError('请求格式错误')
+            self.record_command_action(data)
             if size > MAX_COMMAND_BYTES and data.get('action') != 'policy_trajectory':
                 raise ValueError('请求过大或为空')
-            with self.server.lock:
-                self.server.controller.command(data)
-                state = self.server.controller.snapshot()
-            self.send(200, state)
+            with trace_request(self.request_trace_id), \
+                 log_stages(f'upstream port={self.server.server_port} POST /api/command') as timings:
+                with ExitStack() as locks:
+                    with time_stage(timings, 'lock_wait'):
+                        locks.enter_context(self.server.lock)
+                    with time_stage(timings, 'controller_command'):
+                        self.server.controller.command(data)
+                    with time_stage(timings, 'snapshot'):
+                        state = self.server.controller.snapshot()
+                with time_stage(timings, 'response'):
+                    self.send(200, state)
         except (ValueError, TypeError, KeyError, OverflowError) as e:
             self.send(400, {'error': str(e)})
 
@@ -125,6 +205,7 @@ def main():
     parser.add_argument('--supervised-policy', action='store_true',
                         help='Allow an attended, supported policy trial after measured hold qualification')
     args = parser.parse_args()
+    logging.basicConfig(level=logging.INFO, format='%(levelname)s %(name)s %(message)s')
     try:
         server = Workbench(('127.0.0.1', args.port), live=not args.sim, channel=args.can,
                            validate_hold=args.validate_hold, supervised_policy=args.supervised_policy,

@@ -16,6 +16,7 @@ from record_workbench import RecordingWorkbench
 from test_policy_adapter import FakeWorkbench
 from test_r5_cartesian import TimedWorkbench, fixture_profile
 from test_r5_policy_backend import Clock
+from workbench_arms import ARM_CHANNELS
 
 
 class DualTests(unittest.TestCase):
@@ -210,13 +211,49 @@ class PairedProxyTests(unittest.TestCase):
         self.server.recorder.status.return_value = {}
         self.server.arms = {side: MagicMock() for side in ARMS}
         self.states = {side: {'enabled': True, 'owner': self.owner, 'robot_status': 'ready',
-                             'error_codes': [], 'joints_deg': [0]*6} for side in ARMS}
-        self.server.arm_snapshot = lambda side: copy.deepcopy(self.states[side])
+                             'error_codes': [], 'joints_deg': [0]*6,
+                             'channel': ARM_CHANNELS[side]} for side in ARMS}
+        for side, upstream in self.server.arms.items():
+            upstream.snapshot.side_effect = lambda arm=side: copy.deepcopy(self.states[arm])
+            upstream.command.side_effect = lambda _, arm=side: copy.deepcopy(self.states[arm])
 
     def test_reserved_pair_heartbeats_are_allowed(self):
         for side in ARMS:
             self.server.arm_command(side, {'action': 'heartbeat', 'client': self.owner})
             self.server.arms[side].command.assert_called_once()
+
+    def test_reserved_heartbeat_uses_command_response_after_both_preflight_reads(self):
+        left, right = self.server.arms['left'], self.server.arms['right']
+        receipt = {**self.states['left'], 'sample': 'after heartbeat'}
+        left.command.side_effect = None
+        left.command.return_value = receipt
+        request = {'action': 'heartbeat', 'client': self.owner}
+        with self.assertLogs('record_workbench', level='DEBUG') as logs:
+            self.assertIs(self.server.arm_command('left', request), receipt)
+        left.snapshot.assert_called_once_with()
+        right.snapshot.assert_called_once_with()
+        left.command.assert_called_once_with(request)
+        right.command.assert_not_called()
+        for stage in ('lock_wait', 'selected_state', 'peer_state', 'upstream_command'):
+            self.assertIn(stage, logs.output[0])
+
+    def test_reserved_heartbeat_rejects_a_response_from_the_wrong_channel(self):
+        left = self.server.arms['left']
+        left.command.side_effect = None
+        left.command.return_value = {**self.states['left'], 'channel': ARM_CHANNELS['right']}
+        with self.assertLogs('record_workbench', level='WARNING') as logs:
+            with self.assertRaisesRegex(ValueError, 'command routing blocked'):
+                self.server.arm_command('left', {'action': 'heartbeat', 'client': self.owner})
+        self.assertIn('ok=False', logs.output[0])
+        left.snapshot.assert_called_once_with()
+
+    def test_reserved_heartbeat_records_the_upstream_stage_on_transport_failure(self):
+        self.server.arms['left'].command.side_effect = TimeoutError('upstream timeout')
+        with self.assertLogs('record_workbench', level='WARNING') as logs:
+            with self.assertRaisesRegex(TimeoutError, 'upstream timeout'):
+                self.server.arm_command('left', {'action': 'heartbeat', 'client': self.owner})
+        self.assertIn('upstream_command', logs.output[0])
+        self.assertIn('ok=False', logs.output[0])
 
     def test_reserved_heartbeat_can_complete_while_peer_heartbeat_is_in_flight(self):
         request = {'action': 'heartbeat', 'client': self.owner}
@@ -226,6 +263,7 @@ class PairedProxyTests(unittest.TestCase):
             peer_started.set()
             if not peer_release.wait(timeout=3):
                 raise TimeoutError('Test did not release the peer heartbeat')
+            return copy.deepcopy(self.states['right'])
 
         self.server.arms['right'].command.side_effect = wait_for_peer_release
         with ThreadPoolExecutor(max_workers=2) as pool:
