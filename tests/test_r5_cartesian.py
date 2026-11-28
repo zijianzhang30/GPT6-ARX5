@@ -166,6 +166,40 @@ class CartesianTests(unittest.TestCase):
         pose[0] += .0005
         return {'pose_xyzquat': pose}
 
+    def test_health_check_uses_heartbeat_response_without_second_state_request(self):
+        receipt = self.client.state()
+        with patch.object(self.client, 'state', wraps=self.client.state) as read, \
+                patch.object(self.client, 'command', return_value=receipt) as command:
+            self.robot.check()
+
+        read.assert_called_once_with()
+        command.assert_called_once_with('heartbeat')
+
+    def test_invalid_heartbeat_response_stops_the_session(self):
+        cases = (
+            ({'feedback_age_ms': 151}, 'feedback_age_ms is stale'),
+            ({'owner': 'other'}, 'control owner'),
+            ({'error_codes': [11]}, 'SDK errors'),
+            ({'policy_trajectory_protocol': None}, 'lacks timed Cartesian trajectory'),
+            (None, 'Missing robot state in heartbeat response'),
+        )
+        for changes, reason in cases:
+            with self.subTest(reason=reason):
+                self.setUp()
+                receipt = None if changes is None else {**self.client.state(), **changes}
+                original_command = self.client.command
+
+                def command(action, **fields):
+                    response = original_command(action, **fields)
+                    return receipt if action == 'heartbeat' else response
+
+                with patch.object(self.client, 'command', side_effect=command):
+                    with self.assertRaisesRegex(R5ExecutionFault, reason):
+                        self.robot.check()
+
+                self.assertEqual(self.client.commands, [('heartbeat', {}), ('stop', {})])
+                self.assertFalse(self.client.current['enabled'])
+
     def test_planning_reserve_rejection_precedes_dispatch_and_preserves_session(self):
         self.robot.tracking_reserve_deg = 3.5
         target = self.target()

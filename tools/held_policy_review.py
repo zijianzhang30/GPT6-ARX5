@@ -3,17 +3,20 @@
 import argparse
 from contextlib import ExitStack
 import json
+import logging
 from pathlib import Path
 import queue
+import subprocess
 import sys
 import threading
 import time
+import traceback
 import numpy as np
 from jsonschema import ValidationError
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from control import ROOT
-from aspire_review import AspireRequest, AspireReview, failure, review_socket, validate_socket_path
+from aspire_review import CAMERAS, AspireRequest, AspireReview, failure, review_socket, validate_socket_path
 from held_policy_handoff import ObservingPolicyHandoff, CompletedReviewHandoff, SingleReviewHandoff
 from camera_hold_recovery import CameraHoldHandoff
 from initial_review_handoff import InitialReviewInputHandoff
@@ -34,8 +37,20 @@ from r5_sequential_trial import LeftReturnGate, WorkingArmGate, require_idle, re
 from review_telemetry import ReviewTimer, review_packet
 from reviewed_return import ReviewedReturn
 from visual_control import ProfileArmWorkbenchClient as ArmWorkbenchClient
-from workbench_arms import WORKBENCH_PROFILE_ARM
+from workbench_arms import ARM_CHANNELS, PROFILE_WORKBENCH_ARM, WORKBENCH_PROFILE_ARM
+from workbench_timing import STAGE_TIMING_ENABLED
 from gpt_policy.motion.coordination import TrajectoryIKError
+
+
+def checkout_metadata():
+    try:
+        status = subprocess.run(['git', 'status', '--porcelain=v2', '--branch'], cwd=ROOT,
+                                capture_output=True, text=True, timeout=2, check=True).stdout.splitlines()
+    except (OSError, subprocess.SubprocessError):
+        return {}
+    metadata = dict(line[2:].split(' ', 1) for line in status if line.startswith('# branch.'))
+    return {'revision': metadata.get('branch.oid'), 'branch': metadata.get('branch.head'),
+            'dirty': any(not line.startswith('#') for line in status)}
 
 
 def require_empty_probe_command(line, joint_diagnostic=False):
@@ -272,11 +287,32 @@ def main():
         for line in sys.stdin:
             commands.put(line.strip())
     aspire = AspireReview(args.aspire_allow_motion) if args.aspire_socket else None
-    with ExitStack() as connections, (args.output/'events.jsonl').open('x') as stream:
+    checkout = checkout_metadata() if aspire else None
+    with ExitStack() as resources, ExitStack() as connections, (args.output/'events.jsonl').open('x') as stream:
         timer = ReviewTimer()
         def log(event, data):
-            stream.write(json.dumps({'at_s': time.time(), 'event': event, **data})+'\n')
+            stream.write(json.dumps({'at_s': time.time(), 'monotonic_s': time.monotonic(),
+                                     'event': event, **data})+'\n')
             stream.flush()
+        def finish_command(outcome, details=None):
+            measured = {**timer.finish(outcome), **(details or {})}
+            log('review_command_finished', measured)
+            temporary = args.output/'review_timing.tmp'
+            temporary.write_text(json.dumps(measured, indent=2))
+            temporary.replace(args.output/'review_timing.json')
+
+        if aspire:
+            if STAGE_TIMING_ENABLED:
+                timing_logger = logging.getLogger('r5.workbench.timing')
+                timing_file = logging.FileHandler(args.output/'workbench-client.log', encoding='utf-8')
+                resources.callback(timing_file.close)
+                timing_logger.addHandler(timing_file)
+                resources.callback(timing_logger.removeHandler, timing_file)
+            log('review_session_started', {'checkout': checkout, 'motion_enabled': args.aspire_allow_motion,
+                                           'motion_arm': PROFILE_WORKBENCH_ARM[working.side],
+                                           'arm_channels': ARM_CHANNELS, 'camera_files': CAMERAS,
+                                           'workbench_stage_timing': STAGE_TIMING_ENABLED})
+
         def capture():
             capture_gate = camera_gates[args.adopt_arm or args.working_arm] if stationary_gated else None
             if capture_gate:
@@ -303,8 +339,20 @@ def main():
             temporary = args.output/'review_packet.tmp'
             temporary.write_text(json.dumps(packet, indent=2))
             temporary.replace(args.output/'review_packet.json')
-            log('observation', {'state': state, 'image_stamp': stamp,
-                                'capture_wall_s': packet['capture_wall_s']})
+            event = {'state': state, 'image_stamp': stamp, 'capture_wall_s': packet['capture_wall_s']}
+            if aspire:
+                metadata = {entry['name']: entry for entry in getattr(frames, 'descriptions', [])}
+                cameras_logged = {}
+                for name, key in CAMERAS.items():
+                    details = {'file': Path(images[key]).name}
+                    if key in metadata:
+                        details.update({field: metadata[key].get(field) for field in (
+                            'sequence', 'device', 'sequence_advanced', 'received_monotonic_s')})
+                    cameras_logged[name] = details
+                event.update(observation_id=str(stamp),
+                             command_index=timer.pending['command_index'] if timer.pending else None,
+                             cameras=cameras_logged)
+            log('observation', event)
             print(json.dumps(packet), flush=True)
             return packet
 
@@ -398,8 +446,14 @@ def main():
                     continue
                 if isinstance(line, AspireRequest):
                     if not line.reply.set_running_or_notify_cancel():
+                        log('aspire_request_cancelled', {'tool': line.tool[:80],
+                                                        'arguments': line.audit_arguments()})
                         continue
-                    log('review_command_started', timer.begin('aspire_' + line.tool[:80]))
+                    started = timer.begin('aspire_' + line.tool[:80])
+                    log('review_command_started', {**started, 'source': 'aspire',
+                                                   'arguments': line.audit_arguments(),
+                                                   'queued_s': max(0., started['started_monotonic_s']
+                                                                   - line.received_monotonic_s)})
                     outcome = 'failed'
                     try:
                         if stationary_gated:
@@ -408,17 +462,22 @@ def main():
                         outcome = 'completed'
                     except (ValueError, ValidationError, TrajectoryIKError) as exc:
                         outcome = 'rejected'
-                        log('rejected', {'reason': str(exc)})
                         answer = failure('rejected', str(exc))
+                        log('rejected', {'reason': str(exc)})
                     except R5PoweredHoldFault as exc:
-                        line.reply.set_result(failure('fault_hold', str(exc)))
+                        answer = failure('fault_hold', str(exc))
+                        line.reply.set_result(answer)
                         raise
                     except BaseException:
-                        line.reply.set_result(failure('outcome_unknown',
-                            'Review host fault. Inspect state before any further action.'))
+                        answer = failure('outcome_unknown',
+                                         'Review host fault. Inspect state before any further action.')
+                        line.reply.set_result(answer)
                         raise
                     finally:
-                        log('review_command_finished', timer.finish(outcome))
+                        response = {key: value for key, value in answer.items() if key != 'observation'}
+                        if answer.get('observation') is not None:
+                            response['observation_id'] = answer['observation']['observation_id']
+                        finish_command(outcome, {'response': response})
                     line.reply.set_result(answer)
                     continue
                 if aspire:
@@ -575,11 +634,7 @@ def main():
                     log('rejected', {'reason': str(exc)})
                     print(json.dumps({'rejected': str(exc)}), flush=True)
                 finally:
-                    measured = timer.finish(outcome)
-                    log('review_command_finished', measured)
-                    temporary = args.output/'review_timing.tmp'
-                    temporary.write_text(json.dumps(measured, indent=2))
-                    temporary.replace(args.output/'review_timing.json')
+                    finish_command(outcome)
         except BaseException as exc:
             connections.close()
             if isinstance(exc, R5PoweredHoldFault):
@@ -602,6 +657,7 @@ def main():
                     time.sleep(.1)
             log('host_terminated', {'exception_type': type(exc).__name__, 'reason': str(exc),
                                    'task_completion_verified': False,
+                                   **({'exception_traceback': traceback.format_exc()[-16384:]} if aspire else {}),
                                    # Historical per-arm traces; an idle arm may
                                    # still hold feedback from an earlier command.
                                    'last_execution_feedback': {
@@ -614,6 +670,8 @@ def main():
                 handoff.close()
             supervisor.close()
             cameras.close()
+            if aspire:
+                log('review_cleanup_finished', {})
 
 
 if __name__ == '__main__':

@@ -25,10 +25,12 @@ for(const key of ['gemini','external'])createCameraFeed(key);
 document.addEventListener('visibilitychange',()=>{for(const feed of cameraFeeds.values()){if(document.hidden&&feed.running)feed.stop('页面隐藏时已释放相机',false);else if(!document.hidden&&feed.wanted&&!feed.running)feed.start();}});
 window.addEventListener('pagehide',()=>{for(const feed of cameraFeeds.values())feed.stop('页面已关闭',true);});
 function toast(text) { $('toast').textContent = text; $('toast').hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => $('toast').hidden = true, 4200); }
-async function api(data) {
+async function api(data, stopTrigger) {
   const arm=selectedArm; inFlightCommands++;
   try {
-    const response = await fetch(controlPath('command',arm), {method:'POST', headers:{'Content-Type':'application/json','X-Control-Token':token}, body:JSON.stringify({...data, client}), signal:AbortSignal.timeout(1600)});
+    const headers = {'Content-Type':'application/json','X-Control-Token':token};
+    if (stopTrigger) headers['X-R5-Stop-Trigger'] = stopTrigger;
+    const response = await fetch(controlPath('command',arm), {method:'POST', headers, body:JSON.stringify({...data, client}), signal:AbortSignal.timeout(1600)});
     const value = await response.json();
     if (!response.ok) throw new Error(value.error || '操作失败');
     if(arm===selectedArm){render(value);lastOk=Date.now();} return value;
@@ -36,8 +38,8 @@ async function api(data) {
   finally { inFlightCommands--; }
 }
 function release() { keys.clear(); held = null; document.querySelectorAll('.held').forEach(e=>e.classList.remove('held')); }
-async function stop() { release(); await api({action:'stop'}); }
-function showDialog(html) { release(); if(state?.enabled)stop(); $('dialog-content').innerHTML = html; $('dialog').showModal(); }
+async function stop(trigger) { release(); await api({action:'stop'}, trigger); }
+function showDialog(html) { release(); if(state?.enabled)stop('dialog'); $('dialog-content').innerHTML = html; $('dialog').showModal(); }
 function editable() { return ['INPUT','TEXTAREA','SELECT'].includes(document.activeElement?.tagName) || $('dialog').open; }
 function drawRows(prefix, labels, units) {
   $(prefix+'-rows').innerHTML = labels.map((label,i)=>`<div class="axis-row" data-row="${prefix}-${i}"><div class="axis-meta"><b>${label}</b><output id="${prefix}-actual-${i}">—</output><small id="${prefix}-bounds-${i}">${units[i]}</small></div><button class="jog motion-action" data-axis="${i}" data-sign="-1" aria-label="${label} 减小">−</button><input id="${prefix}-target-${i}" type="number" step="${prefix==='joint'?'.1':'1'}" aria-label="${label} 目标 ${units[i]}"><button class="jog motion-action" data-axis="${i}" data-sign="1" aria-label="${label} 增大">+</button></div>`).join('');
@@ -58,8 +60,8 @@ for (const button of document.querySelectorAll('.jog')) {
 }
 $('connect').onclick=()=>{showDialog(`<h2>连接真实机械臂</h2><p>厂商 SDK 会使能电机并执行初始化，其中包含回零行为。连接后模型显示实测关节状态。</p><p>请确认机械臂工作区空旷，手远离关节和夹爪。初始化过程中网页暂停无法中断厂商构造函数；需要能够使用设备电源/急停。</p><button id="confirm-connect" class="primary">连接并初始化机械臂</button>`);$('confirm-connect').onclick=async()=>{$('dialog').close();await api({action:'connect',acknowledge_initialization:true});};};
 $('disconnect').onclick=()=>api({action:'disconnect'});
-$('enable').onclick=()=>state?.enabled?stop():api({action:'enable'});
-$('stop').onclick=stop;
+$('enable').onclick=()=>state?.enabled?stop('enable_toggle'):api({action:'enable'});
+$('stop').onclick=()=>stop('stop_button');
 $('reset').onclick=async()=>{dirty.clear();gripDirty=false;await api({action:'reset'});};
 $('speed').oninput=()=>{$('speed-value').textContent=$('speed').value+'%';};
 $('speed').onchange=()=>api({action:'settings',speed:Number($('speed').value)/100});
@@ -80,7 +82,7 @@ $('dialog').addEventListener('click',e=>{if(e.target===$('dialog'))$('dialog').c
 $('save-pose').onclick=()=>{showDialog(`<h2>保存当前的位置</h2><p>记录六关节角度和夹爪开口，位置保留在本次服务会话中。可导出 JSON 备份。</p><form id="save-form"><label for="pose-name">位置名称</label><input id="pose-name" maxlength="40" placeholder="例如：观察位置" autofocus><button class="primary" type="submit">保存位置</button></form>`);$('save-form').onsubmit=async e=>{e.preventDefault();const r=await api({action:'save_pose',name:$('pose-name').value});if(r)$('dialog').close();};};
 $('export').onclick=()=>{const data={model:'R5',mode:'simulation',units:{joints:'degrees',gripper:'mm_simulated'},poses:state?.poses||[]};const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([JSON.stringify(data,null,2)],{type:'application/json'}));a.download='r5-positions.json';a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000);};
 window.addEventListener('keydown', e=>{
-  if((e.code==='Escape'||(e.code==='Space'&&!editable()))&&!$('dialog').open){e.preventDefault();stop();return;}
+  if((e.code==='Escape'||(e.code==='Space'&&!editable()))&&!$('dialog').open){e.preventDefault();stop(e.code==='Escape'?'escape_key':'space_key');return;}
   if(e.key==='?'&&!editable()){e.preventDefault();$('help').click();return;}
   if(editable()||!$('keyboard').checked||!state?.enabled)return;
   if(/^Digit[1-6]$/.test(e.code)){selected=Number(e.code.slice(-1))-1;e.preventDefault();return;}
@@ -88,8 +90,8 @@ window.addEventListener('keydown', e=>{
   if(valid.includes(e.code)){e.preventDefault();keys.add(e.code);}
 });
 window.addEventListener('keyup',e=>keys.delete(e.code));
-window.addEventListener('blur',()=>{release();if(state?.enabled&&state.owner===client)stop();});
-document.addEventListener('visibilitychange',()=>{if(document.hidden){release();if(state?.enabled&&state.owner===client)stop();}});
+window.addEventListener('blur',()=>{release();if(state?.enabled&&state.owner===client)stop('window_blur');});
+document.addEventListener('visibilitychange',()=>{if(document.hidden){release();if(state?.enabled&&state.owner===client)stop('page_hidden');}});
 document.addEventListener('focusin',e=>{if(['INPUT','SELECT','TEXTAREA'].includes(e.target.tagName))release();});
 function commandVector(){const jog=[0,0,0,0,0,0];let gripper=0;
   if(held){if(held.grip)gripper=held.grip;else jog[held.axis]=held.sign;}

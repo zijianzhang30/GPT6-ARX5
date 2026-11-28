@@ -185,8 +185,8 @@ class R5PolicyBackend:
                 raise R5ExecutionFault(self.fault)
             return self.client.command(action, **fields)
 
-    def check(self):
-        """Health callback; never acquires ownership or enables a disabled arm."""
+    def check(self, *, return_heartbeat_state=False):
+        """Check health and renew an existing lease, optionally validating the reply."""
         if self.fault_hold is not None:
             raise R5PoweredHoldFault(self.fault)
         try:
@@ -194,7 +194,11 @@ class R5PolicyBackend:
                 state = self._read(holding=not self.busy)
                 self.engaged = True
                 self.vision_check()
-                self._command("heartbeat")
+                receipt = self._command("heartbeat")
+                if return_heartbeat_state:
+                    if not isinstance(receipt, dict):
+                        raise R5ExecutionFault("Missing robot state in heartbeat response")
+                    return self._validate_state(receipt, holding=False, guard=self.guard)
                 return state
         except Exception as exc:
             self._fail(exc, request_stop=self.busy or self.engaged)

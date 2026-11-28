@@ -212,8 +212,8 @@ class CartesianBackend:
         return getattr(self.backend, name)
 
     def check(self):
-        self.backend.check()
-        if self.backend._read().get('policy_trajectory_protocol') != PolicyTrajectory.protocol:
+        state = self.backend.check(return_heartbeat_state=True)
+        if state.get('policy_trajectory_protocol') != PolicyTrajectory.protocol:
             self.backend.abort('Workbench lacks timed Cartesian trajectory transport')
 
     def supervise(self):

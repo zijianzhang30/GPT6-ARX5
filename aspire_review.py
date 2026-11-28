@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 from socketserver import StreamRequestHandler, ThreadingUnixStreamServer
 from threading import Lock, Thread
+import time
 
 from workbench_arms import ARM_CHANNELS, PROFILE_WORKBENCH_ARM
 
@@ -25,6 +26,16 @@ class AspireRequest:
     tool: str
     arguments: dict
     reply: Future = field(default_factory=Future)
+    received_monotonic_s: float = field(default_factory=time.monotonic)
+
+    def audit_arguments(self):
+        keys = ('arm', 'observation_id', 'note', 'position', 'target_pose')
+        arguments = {key: self.arguments[key] for key in keys if key in self.arguments}
+        try:
+            json.dumps(arguments, allow_nan=False)
+        except (ValueError, RecursionError):
+            return {'argument_names': list(arguments), 'invalid_json_values': True}
+        return arguments
 
 
 def failure(status, reason):

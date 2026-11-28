@@ -9,17 +9,21 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
+from aspire_review import AspireRequest
 from review_telemetry import ReviewTimer, review_packet
 from r5_policy_backend import R5ExecutionFault, R5PoweredHoldFault
+from r5_policy_supervisor import CameraBatch
 
 
 def arm_state(side='left'):
     return {
         'observation_id': side+'-fresh', 'tcp_command_xyzquat': [0., 0., .2, 0., 0., 0., 1.],
         'tcp_xyzquat': [0., 0., .199, 0., 0., 0., 1.],
+        'gripper_normalized': .88,
         'gripper_command_normalized': .9, 'gripper_next_opening_bounds': [.68, .92],
         'raw_state': dict(robot_status='ready', enabled=True, moving=False,
                           control_state='holding', owner='test-owner', error_codes=[],
+                          channel='can0' if side == 'left' else 'can1',
                           policy_trajectory_active=False, joints_deg=[.2]*6, command_deg=[0.]*6),
         'motion_budget': {'accepted_proposals': 3, 'proposed_joint_travel_deg': 11.,
                           'proposed_gripper_travel_raw': .4,
@@ -78,7 +82,7 @@ class ReviewTelemetryTests(unittest.TestCase):
 class ReviewHostSmokeTests(unittest.TestCase):
     """Run the actual stdin dispatch loop with fake hardware and cameras."""
     def run_host(self, commands, *, motion_fault=False, working_arm=None, feedback=None,
-                 return_handler=None, arrival_hold=False):
+                 return_handler=None, arrival_hold=False, aspire=False):
         spec = importlib.util.spec_from_file_location('review_host_under_test',
             Path(__file__).resolve().parents[1]/'tools/held_policy_review.py')
         host = importlib.util.module_from_spec(spec)
@@ -100,8 +104,10 @@ class ReviewHostSmokeTests(unittest.TestCase):
             def prepare(client, *args, **kwargs):
                 client.state.return_value = arm_state(client.arm)['raw_state']
             cameras = Mock()
-            cameras.snapshot.return_value = {k: SimpleNamespace(data=b'fake-jpeg')
-                                               for k in ('top', 'left', 'right')}
+            images = {key: SimpleNamespace(data=b'fake-jpeg') for key in ('top', 'left', 'right')}
+            cameras.snapshot.return_value = CameraBatch(images, [
+                {'name': key, 'sequence': index, 'sequence_advanced': True, 'received_monotonic_s': 1.}
+                for index, key in enumerate(images)])
             robot = Mock()
             robot.operation_lock = nullcontext()
             robot.robots = {side: Mock() for side in ('left', 'right')}
@@ -131,6 +137,10 @@ class ReviewHostSmokeTests(unittest.TestCase):
                 argv += ['--retain-settle-fault-hold']
                 robot.retain_stationary_faults.return_value = {
                     side: arm_state(side)['raw_state'] for side in ('left', 'right')}
+            if aspire:
+                argv += ['--aspire-socket', str(root/'review.sock'), '--aspire-allow-motion']
+                robot.execute.return_value = {
+                    'arms': {'right': {'control_state': 'holding', 'settle': {'settled': True}}}}
             quarantine = host.quarantine_arrival_fault
             def run_quarantine(*args):
                 return quarantine(*args, sleep=Mock(
@@ -161,6 +171,29 @@ class ReviewHostSmokeTests(unittest.TestCase):
             supervisor.close.assert_called_once()
             cameras.close.assert_called_once()
             return events, packet, timing, robot
+
+    def test_aspire_logs_link_action_reply_and_fresh_camera_files(self):
+        observe = AspireRequest('observe', {})
+        motion = AspireRequest('v2.cap_set_gripper', {
+            'arm': 'left', 'observation_id': '101', 'note': 'both pads overlap', 'position': .7})
+        stale = AspireRequest(motion.tool, {**motion.arguments, 'position': .65})
+        with patch('time.time_ns', side_effect=[100, 101, 102]):
+            events, _, timing, robot = self.run_host([observe, motion, stale],
+                                                      working_arm='left', aspire=True)
+        self.assertEqual(events[0]['motion_arm'], 'left')
+        start = next(e for e in events if e['event']=='review_command_started' and e['command_index']==2)
+        self.assertEqual(start['arguments'], motion.arguments)
+        finished = [e for e in events if e['event']=='review_command_finished']
+        response = finished[1]['response']
+        self.assertEqual(response['receipt']['channel'], 'can1')
+        self.assertEqual(response['observation_id'], '102')
+        observation = next(e for e in events if e.get('observation_id')=='102')
+        self.assertEqual(observation['command_index'], 2)
+        self.assertEqual(observation['cameras']['left_wrist']['file'], '102_right.jpg')
+        self.assertTrue(observation['cameras']['left_wrist']['sequence_advanced'])
+        self.assertEqual(timing['response']['status'], 'rejected')
+        self.assertEqual(events[-1]['event'], 'review_cleanup_finished')
+        robot.execute.assert_called_once()
 
     def test_arrival_fault_enters_quarantine_without_dispatching_queued_action(self):
         command = json.dumps({'tool': 'move_to', 'arguments': {
